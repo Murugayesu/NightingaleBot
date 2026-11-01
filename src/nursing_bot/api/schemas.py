@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +14,9 @@ class FilterPayload(BaseModel):
 
 
 class ChatContextTurn(BaseModel):
-    role: str = Field(..., description="Role: 'user' or 'assistant'")
+    role: Literal["user", "assistant"] = Field(
+        ..., description="Role: 'user' or 'assistant'"
+    )
     content: str = Field(..., max_length=2000, description="Message text")
 
 

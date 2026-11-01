@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nursing_bot.api.dependencies import get_db, get_llm_client_dep, get_storage_dep
 from nursing_bot.api.schemas import HealthResponse, SystemStatsResponse
+from nursing_bot.api.security import verify_admin_key
 from nursing_bot.config import get_settings
 from nursing_bot.models.litellm_client import LiteLLMClient
 from nursing_bot.storage.models import ChatSession, Chunk, Document
@@ -12,7 +13,11 @@ from nursing_bot.storage.object_store import S3Backend
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
-@router.get("/health", response_model=HealthResponse)
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    dependencies=[Depends(verify_admin_key)],
+)
 async def admin_health(
     db: AsyncSession = Depends(get_db),
     storage: S3Backend = Depends(get_storage_dep),
@@ -42,7 +47,11 @@ async def admin_health(
     )
 
 
-@router.get("/stats", response_model=SystemStatsResponse)
+@router.get(
+    "/stats",
+    response_model=SystemStatsResponse,
+    dependencies=[Depends(verify_admin_key)],
+)
 async def admin_stats(
     db: AsyncSession = Depends(get_db),
 ):

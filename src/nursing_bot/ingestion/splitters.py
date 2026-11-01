@@ -38,7 +38,7 @@ class StructureSplitter:
 
         for doc in documents:
             source = doc.metadata.get("source", "")
-            is_markdown = source.endswith((".md", ".markdown")) or "#" in doc.page_content
+            is_markdown = source.endswith((".md", ".markdown"))
 
             if is_markdown:
                 try:

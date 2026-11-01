@@ -27,10 +27,13 @@ def test_reciprocal_rank_fusion():
 
 
 def test_relevance_gate():
-    gate = RelevanceGate(rrf_threshold=0.02)
+    gate = RelevanceGate(rrf_threshold=0.02, rerank_threshold=0.50)
     assert gate.evaluate([0.035, 0.015]).passed is True
     assert gate.evaluate([0.015, 0.012]).passed is False
     assert gate.evaluate([]).passed is False
+    # Reranking mode threshold check
+    assert gate.evaluate([0.40], rerank_enabled=True).passed is False
+    assert gate.evaluate([0.60], rerank_enabled=True).passed is True
 
 
 @pytest.mark.asyncio

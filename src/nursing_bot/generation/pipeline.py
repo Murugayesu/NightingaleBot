@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nursing_bot.config import get_settings
 from nursing_bot.generation.assembler import ContextAssembler
 from nursing_bot.generation.condenser import HistoryCondenser
-from nursing_bot.generation.guardrails import InputGuard
+from nursing_bot.generation.guardrails import InputGuard, expand_synonyms
 from nursing_bot.generation.verifier import CitationCoverageVerifier
 from nursing_bot.models.litellm_client import LiteLLMClient
 from nursing_bot.retrieval.gate import RelevanceGate
@@ -62,18 +62,20 @@ class GenerationPipeline:
             )
 
         sanitized_query = guard.sanitized_query
-        standalone_query = await self.condenser.condense(sanitized_query, history)
+        expanded_query = expand_synonyms(sanitized_query, settings.domain_synonyms)
+        standalone_query = await self.condenser.condense(expanded_query, history)
 
-        self.retriever.session = session
-        if filters is not None:
-            self.retriever.default_filters = filters
-        if top_k is not None:
-            self.retriever.top_k = top_k
-
-        documents = await self.retriever.ainvoke(standalone_query)
+        documents = await self.retriever.asearch(
+            query=standalone_query,
+            session=session,
+            filters=filters,
+            top_k=top_k or self.default_top_k,
+        )
 
         scores = [doc.metadata.get("score", 0.0) for doc in documents]
-        gate_decision = self.gate.evaluate(scores)
+        gate_decision = self.gate.evaluate(
+            scores, rerank_enabled=self.retriever.rerank_enabled
+        )
         if not gate_decision.passed:
             return RAGResponse(
                 answer=settings.RAG_ABSTENTION_MESSAGE,
@@ -110,7 +112,9 @@ class GenerationPipeline:
             gate_passed=True,
             top_score=gate_decision.top_score,
             applied_filters=filters or {},
-            abstention_reason=verification.notes if not verification.is_grounded else None,
+            abstention_reason=verification.notes
+            if not verification.is_grounded
+            else None,
         )
 
     async def astream_query(
@@ -138,17 +142,19 @@ class GenerationPipeline:
             return
 
         sanitized_query = guard.sanitized_query
-        standalone_query = await self.condenser.condense(sanitized_query, history)
+        expanded_query = expand_synonyms(sanitized_query, settings.domain_synonyms)
+        standalone_query = await self.condenser.condense(expanded_query, history)
 
-        self.retriever.session = session
-        if filters is not None:
-            self.retriever.default_filters = filters
-        if top_k is not None:
-            self.retriever.top_k = top_k
-
-        documents = await self.retriever.ainvoke(standalone_query)
+        documents = await self.retriever.asearch(
+            query=standalone_query,
+            session=session,
+            filters=filters,
+            top_k=top_k or self.default_top_k,
+        )
         scores = [doc.metadata.get("score", 0.0) for doc in documents]
-        gate_decision = self.gate.evaluate(scores)
+        gate_decision = self.gate.evaluate(
+            scores, rerank_enabled=self.retriever.rerank_enabled
+        )
 
         if not gate_decision.passed:
             yield {"type": "token", "content": settings.RAG_ABSTENTION_MESSAGE}
@@ -163,6 +169,11 @@ class GenerationPipeline:
             return
 
         assembled = ContextAssembler.assemble(documents)
+
+        # Yield citations immediately as retrieval and gate passed
+        if assembled.citations:
+            yield {"type": "citations", "citations": assembled.citations}
+
         user_prompt = (
             f"Official Context:\n{assembled.context_text}\n\n"
             f"User Question: {sanitized_query}\nAnswer:"
@@ -175,6 +186,7 @@ class GenerationPipeline:
             temperature=0.0,
         ):
             tokens.append(token)
+            yield {"type": "token", "content": token}
 
         raw_answer = "".join(tokens)
         verification = CitationCoverageVerifier.verify(
@@ -183,16 +195,13 @@ class GenerationPipeline:
             gate_passed=True,
         )
 
-        verified_citations = assembled.citations if verification.is_grounded else []
-        if verified_citations:
-            yield {"type": "citations", "citations": verified_citations}
-
-        yield {"type": "token", "content": verification.final_answer}
         yield {
             "type": "end",
-            "citations": verified_citations,
+            "citations": assembled.citations if verification.is_grounded else [],
             "gate_passed": True,
             "is_grounded": verification.is_grounded,
             "applied_filters": filters or {},
-            "abstention_reason": verification.notes if not verification.is_grounded else None,
+            "abstention_reason": verification.notes
+            if not verification.is_grounded
+            else None,
         }

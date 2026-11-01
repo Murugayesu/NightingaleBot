@@ -32,10 +32,13 @@ class CitationCoverageVerifier:
         citations: list[dict[str, Any]],
         gate_passed: bool,
     ) -> VerificationResult:
+        settings = get_settings()
+        abstention_message = settings.RAG_ABSTENTION_MESSAGE
+
         if not gate_passed or not citations:
             return VerificationResult(
                 is_grounded=False,
-                final_answer=cls.ABSTENTION_MESSAGE,
+                final_answer=abstention_message,
                 confidence_score=0.0,
                 notes="Retrieval gate failed or no supporting citations present.",
             )
@@ -50,15 +53,18 @@ class CitationCoverageVerifier:
         valid_indices = {c["source_index"] for c in citations}
         tags = cls.SOURCE_TAG.findall(normalized_answer)
 
+        # Check for citation mentions that did not resolve to valid numbered tags
+        all_mentions = cls.SOURCE_MENTION.findall(normalized_answer)
+
         if (
             not answer.strip()
             or not tags
-            or len(tags) != len(cls.SOURCE_MENTION.findall(normalized_answer))
+            or len(tags) < len(all_mentions)
             or any(int(index) not in valid_indices for index in tags)
         ):
             return VerificationResult(
                 is_grounded=False,
-                final_answer=cls.ABSTENTION_MESSAGE,
+                final_answer=abstention_message,
                 confidence_score=0.0,
                 notes="Answer has no valid inline citations or cites an unknown source.",
             )

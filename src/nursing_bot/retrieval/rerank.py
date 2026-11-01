@@ -23,7 +23,11 @@ async def rerank_candidates(
     reranked: list[dict[str, Any]] = []
     for item in rerank_results:
         idx = item.get("index") if isinstance(item, dict) else getattr(item, "index", 0)
-        score = item.get("relevance_score") if isinstance(item, dict) else getattr(item, "relevance_score", 0.0)
+        score = (
+            item.get("relevance_score")
+            if isinstance(item, dict)
+            else getattr(item, "relevance_score", 0.0)
+        )
         if 0 <= idx < len(candidates):
             c_copy = dict(candidates[idx])
             c_copy["rerank_score"] = score

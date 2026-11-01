@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     CORS_ALLOWED_ORIGINS: str = "*"
 
     # Security & Rate Limiting
-    ADMIN_API_KEY: str = "admin-secret-key"
+    ADMIN_API_KEY: str = "admin:admin@123"
     CHAT_RATE_LIMIT: str = "20/minute"
 
     # Domain & Organization Presentation (Defaults tailored for TNNMC Nursing)
@@ -34,11 +34,27 @@ class Settings(BaseSettings):
         "with inline tags such as [Source 1]. If the context is insufficient, state honestly "
         "that the information is not available in the records. Do not invent or assume facts."
     )
-    RAG_ABSTENTION_MESSAGE: str = (
-        "I could not find sufficient information in the verified records to answer that question."
-    )
+    RAG_ABSTENTION_MESSAGE: str = "I could not find sufficient information in the verified records to answer that question."
     DOMAIN_SYNONYMS_JSON: str = "{}"
     PROGRAM_ALIASES_JSON: str = "{}"
+
+    @property
+    def domain_synonyms(self) -> dict[str, str]:
+        import json
+
+        try:
+            return json.loads(self.DOMAIN_SYNONYMS_JSON)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @property
+    def program_aliases(self) -> dict[str, str]:
+        import json
+
+        try:
+            return json.loads(self.PROGRAM_ALIASES_JSON)
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     # PostgreSQL 16/18 + pgvector
     DATABASE_URL: str = (
@@ -74,6 +90,7 @@ class Settings(BaseSettings):
     GATE_THRESHOLD_RRF: float = 0.02
     GATE_THRESHOLD_RERANK: float = 0.50
     RETRIEVAL_TOP_K: int = 10
+    RRF_K: int = 60
 
     # Observability (Arize Phoenix)
     PHOENIX_ENABLED: bool = True
@@ -90,8 +107,18 @@ class Settings(BaseSettings):
     def validate_production(self) -> None:
         """Validate safety requirements when running in production."""
         if self.ENVIRONMENT == "production":
-            if self.ADMIN_API_KEY in {"admin-secret-key", "change-me", ""}:
-                raise ValueError("ADMIN_API_KEY must be set to a secure secret in production.")
+            insecure_keys = {
+                "admin:admin@123",
+                "admin-secret-key",
+                "change-me",
+                "root",
+                "admin",
+                "",
+            }
+            if self.ADMIN_API_KEY in insecure_keys:
+                raise ValueError(
+                    "ADMIN_API_KEY must be set to a secure secret in production."
+                )
             if self.DATABASE_URL.startswith("sqlite"):
                 raise ValueError("SQLite is not supported in production.")
 

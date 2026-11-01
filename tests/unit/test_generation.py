@@ -4,9 +4,19 @@ import pytest
 from langchain_core.documents import Document as LCDocument
 
 from nursing_bot.generation.condenser import HistoryCondenser
-from nursing_bot.generation.guardrails import InputGuard
+from nursing_bot.generation.guardrails import InputGuard, expand_synonyms
 from nursing_bot.generation.pipeline import GenerationPipeline, RAGResponse
 from nursing_bot.generation.verifier import CitationCoverageVerifier
+
+
+def test_synonym_expansion():
+    synonyms = {
+        "GNM": "General Nursing and Midwifery",
+        "TNNMC": "Tamil Nadu Nurses and Midwives Council",
+    }
+    result = expand_synonyms("What are the GNM regulations under TNNMC?", synonyms)
+    assert "General Nursing and Midwifery" in result
+    assert "Tamil Nadu Nurses and Midwives Council" in result
 
 
 def test_guardrails_injection():
@@ -17,7 +27,9 @@ def test_guardrails_injection():
 
 
 def test_guardrails_pii_redaction():
-    text_with_pii = "Contact me at user@example.com or +1 555-123-4567 regarding renewal."
+    text_with_pii = (
+        "Contact me at user@example.com or +1 555-123-4567 regarding renewal."
+    )
     decision = InputGuard.check_and_sanitize(text_with_pii)
     assert decision.is_safe
     assert "user@example.com" not in decision.sanitized_query
@@ -88,7 +100,9 @@ async def test_generation_pipeline_aquery():
             "institution": "TNNMC Office",
         },
     )
+    mock_retriever.asearch = AsyncMock(return_value=[retrieved_doc])
     mock_retriever.ainvoke = AsyncMock(return_value=[retrieved_doc])
+    mock_retriever.rerank_enabled = False
 
     mock_llm = AsyncMock()
     mock_llm.acomplete = AsyncMock(
@@ -109,3 +123,46 @@ async def test_generation_pipeline_aquery():
     assert "30-day notice period [Source 1]" in res.answer
     assert len(res.citations) == 1
     assert res.citations[0]["source_index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_real_streaming_pipeline_yields_token_by_token():
+    mock_retriever = AsyncMock()
+    retrieved_doc = LCDocument(
+        page_content="Policy document specifies 30-day notice period.",
+        metadata={
+            "source_index": 1,
+            "chunk_id": "c-123",
+            "document_id": "d-456",
+            "score": 0.045,
+            "institution": "TNNMC Office",
+        },
+    )
+    mock_retriever.asearch = AsyncMock(return_value=[retrieved_doc])
+    mock_retriever.rerank_enabled = False
+
+    async def fake_astream(*args, **kwargs):
+        for token in ["Notice ", "period ", "is ", "30-day ", "[Source 1]."]:
+            yield token
+
+    mock_llm = AsyncMock()
+    mock_llm.astream = fake_astream
+
+    pipeline = GenerationPipeline(
+        retriever=mock_retriever,
+        llm_client=mock_llm,
+    )
+
+    session = AsyncMock()
+    events = []
+    async for evt in pipeline.astream_query(session, "What is the notice period?"):
+        events.append(evt)
+
+    citations_events = [e for e in events if e["type"] == "citations"]
+    token_events = [e for e in events if e["type"] == "token"]
+    end_events = [e for e in events if e["type"] == "end"]
+
+    assert len(citations_events) == 1
+    assert len(token_events) == 5
+    assert len(end_events) == 1
+    assert end_events[0]["is_grounded"] is True

@@ -11,15 +11,11 @@ from nursing_bot.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
-)
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 _PHONE_PATTERN = re.compile(
     r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
 )
-_ID_PATTERN = re.compile(
-    r"\b(?:\d{4}[-\s]?\d{4}[-\s]?\d{4}|\d{3}-\d{2}-\d{4})\b"
-)
+_ID_PATTERN = re.compile(r"\b(?:\d{4}[-\s]?\d{4}[-\s]?\d{4}|\d{3}-\d{2}-\d{4})\b")
 
 
 class PIIRedactionSpanProcessor(SpanProcessor):
@@ -88,7 +84,9 @@ def setup_phoenix(settings: Any | None = None) -> TracerProvider | None:
 
         trace.set_tracer_provider(tracer_provider)
         LiteLLMInstrumentor().instrument(tracer_provider=tracer_provider)
-        logger.info("Arize Phoenix instrumented for project '%s'.", s.PHOENIX_PROJECT_NAME)
+        logger.info(
+            "Arize Phoenix instrumented for project '%s'.", s.PHOENIX_PROJECT_NAME
+        )
         return tracer_provider
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to initialize Phoenix tracer: %s", exc)

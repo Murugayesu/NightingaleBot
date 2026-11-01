@@ -79,15 +79,16 @@ class IngestionPipeline:
                         default_doc_type=doc.doc_type,
                     )
             else:
-                raw_parsed_docs = DocumentLoaderFactory.load_bytes(raw_bytes, doc.filename)
+                raw_parsed_docs = DocumentLoaderFactory.load_bytes(
+                    raw_bytes, doc.filename
+                )
                 lc_docs = self.splitter.split_documents(raw_parsed_docs)
 
             if not lc_docs:
                 raise ValueError(f"No extractable content found in '{doc.filename}'.")
 
             contextualized_docs = [
-                add_context_headers(d, document_title=doc.filename)
-                for d in lc_docs
+                add_context_headers(d, document_title=doc.filename) for d in lc_docs
             ]
 
             texts = [d.page_content for d in contextualized_docs]
@@ -99,18 +100,28 @@ class IngestionPipeline:
 
             await session.execute(delete(Chunk).where(Chunk.document_id == document_id))
 
-            for idx, (cdoc, vector) in enumerate(zip(contextualized_docs, all_embeddings)):
+            for idx, (cdoc, vector) in enumerate(
+                zip(contextualized_docs, all_embeddings)
+            ):
                 hierarchy = []
                 for level in range(1, 5):
                     val = cdoc.metadata.get(f"header_{level}")
                     if val and isinstance(val, str):
                         hierarchy.append(val)
 
+                raw_content = (
+                    lc_docs[idx].page_content
+                    if idx < len(lc_docs)
+                    else cdoc.page_content
+                )
                 chunk = Chunk(
                     id=uuid.uuid4(),
                     document_id=doc.id,
                     chunk_index=idx,
                     content=cdoc.page_content,
+                    contextualised_text=raw_content,
+                    embedding=vector,
+                    embedding_model=self.llm_client.embedding_model,
                     heading_hierarchy=hierarchy or [doc.filename],
                     page_number=cdoc.metadata.get("page"),
                     metadata_json={
@@ -118,7 +129,6 @@ class IngestionPipeline:
                         **doc.metadata_json,
                         **cdoc.metadata,
                     },
-                    embedding=vector,
                     tsv=func.to_tsvector("english", cdoc.page_content),
                 )
                 session.add(chunk)
@@ -133,5 +143,12 @@ class IngestionPipeline:
             logger.exception("Failed to ingest document %s", document_id)
             doc.status = "failed"
             doc.error_message = str(exc)
-            await session.commit()
+            try:
+                await session.commit()
+            except Exception as commit_exc:  # noqa: BLE001
+                logger.error(
+                    "Failed to persist failed status for document %s: %s",
+                    document_id,
+                    commit_exc,
+                )
             raise

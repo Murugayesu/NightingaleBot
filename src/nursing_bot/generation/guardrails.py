@@ -1,9 +1,7 @@
 import re
 from dataclasses import dataclass
 
-_EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
-)
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 _PHONE_PATTERN = re.compile(
     r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
 )
@@ -61,3 +59,15 @@ class InputGuard:
             sanitized_query=sanitized,
             rejection_reason=None,
         )
+
+
+def expand_synonyms(query: str, synonyms: dict[str, str]) -> str:
+    """Expand domain-specific synonyms and acronyms in query."""
+    if not synonyms:
+        return query
+    expanded = query
+    for key, replacement in synonyms.items():
+        if key and replacement:
+            pattern = re.compile(rf"\b{re.escape(key)}\b", re.IGNORECASE)
+            expanded = pattern.sub(replacement, expanded)
+    return expanded

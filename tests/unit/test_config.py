@@ -6,15 +6,23 @@ from nursing_bot.config import Settings
 def test_default_config():
     settings = Settings()
     assert settings.ENVIRONMENT == "development"
-    assert settings.ADMIN_API_KEY == "admin-secret-key"
+    assert settings.ADMIN_API_KEY == "admin:admin@123"
     assert settings.CHAT_RATE_LIMIT == "20/minute"
     assert settings.EMBEDDING_DIMENSIONS == 1536
+    assert settings.RRF_K == 60
     assert "TNNMC" in settings.KNOWLEDGE_BASE_NAME
 
 
 def test_production_safety_check():
     with pytest.raises(ValueError, match="ADMIN_API_KEY must be set"):
-        Settings(ENVIRONMENT="production", ADMIN_API_KEY="admin-secret-key").validate_production()
+        Settings(
+            ENVIRONMENT="production", ADMIN_API_KEY="admin:admin@123"
+        ).validate_production()
+
+    with pytest.raises(ValueError, match="ADMIN_API_KEY must be set"):
+        Settings(
+            ENVIRONMENT="production", ADMIN_API_KEY="admin-secret-key"
+        ).validate_production()
 
     # Valid production settings
     prod = Settings(

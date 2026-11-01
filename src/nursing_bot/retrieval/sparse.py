@@ -50,7 +50,11 @@ async def run_sparse_search(
         rows = result.mappings().all()
 
     if not rows and query.strip():
-        tokens = [t for t in "".join(c if c.isalnum() else " " for c in query).split() if len(t) > 2]
+        tokens = [
+            t
+            for t in "".join(c if c.isalnum() else " " for c in query).split()
+            if len(t) > 2
+        ]
         if tokens:
             or_query = " | ".join(tokens)
             or_params = {"or_query": or_query, "limit": limit}

@@ -29,7 +29,9 @@ class DocumentLoaderFactory:
                 os.remove(tmp_path)
 
     @classmethod
-    def load_file(cls, file_path: str, filename_override: str | None = None) -> list[Document]:
+    def load_file(
+        cls, file_path: str, filename_override: str | None = None
+    ) -> list[Document]:
         path = Path(file_path)
         display_name = filename_override or path.name
         suffix = path.suffix.casefold()
@@ -44,10 +46,19 @@ class DocumentLoaderFactory:
             reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
             docs: list[Document] = []
             for i, row in enumerate(reader):
-                row_lines = [f"{k}: {v}" for k, v in row.items() if v is not None and str(v).strip()]
+                row_lines = [
+                    f"{k}: {v}"
+                    for k, v in row.items()
+                    if v is not None and str(v).strip()
+                ]
                 page_content = "\n".join(row_lines)
                 if page_content.strip():
-                    docs.append(Document(page_content=page_content, metadata={"source": display_name, "row": i}))
+                    docs.append(
+                        Document(
+                            page_content=page_content,
+                            metadata={"source": display_name, "row": i},
+                        )
+                    )
             return docs
 
         if suffix == ".pdf":
@@ -60,21 +71,44 @@ class DocumentLoaderFactory:
                     text = page.extract_text() or ""
                     if text.strip():
                         pdf_docs.append(
-                            Document(page_content=text, metadata={"source": display_name, "page": page_num})
+                            Document(
+                                page_content=text,
+                                metadata={"source": display_name, "page": page_num},
+                            )
                         )
                 return pdf_docs
             except Exception as e:
-                raise ValueError(f"Failed to parse PDF document {display_name}: {e}") from e
+                raise ValueError(
+                    f"Failed to parse PDF document {display_name}: {e}"
+                ) from e
 
         if suffix in {".docx", ".doc"}:
             try:
                 import docx
 
                 doc = docx.Document(str(path))
-                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-                return [Document(page_content="\n\n".join(paragraphs), metadata={"source": display_name})]
+                parts: list[str] = []
+                for p in doc.paragraphs:
+                    if p.text.strip():
+                        parts.append(p.text.strip())
+                for table in doc.tables:
+                    table_rows: list[str] = []
+                    for row in table.rows:
+                        row_cells = [cell.text.strip() for cell in row.cells]
+                        if any(row_cells):
+                            table_rows.append(" | ".join(row_cells))
+                    if table_rows:
+                        parts.append("\n".join(table_rows))
+                return [
+                    Document(
+                        page_content="\n\n".join(parts),
+                        metadata={"source": display_name},
+                    )
+                ]
             except Exception as e:
-                raise ValueError(f"Failed to parse DOCX document {display_name}: {e}") from e
+                raise ValueError(
+                    f"Failed to parse DOCX document {display_name}: {e}"
+                ) from e
 
         if suffix in {".xlsx", ".xls"}:
             try:
@@ -87,13 +121,23 @@ class DocumentLoaderFactory:
                     lines = []
                     for row in ws.iter_rows(values_only=True):
                         if any(cell is not None for cell in row):
-                            lines.append(" | ".join(str(cell) if cell is not None else "" for cell in row))
+                            lines.append(
+                                " | ".join(
+                                    str(cell) if cell is not None else ""
+                                    for cell in row
+                                )
+                            )
                     if lines:
                         excel_docs.append(
-                            Document(page_content="\n".join(lines), metadata={"source": display_name, "sheet": sheet})
+                            Document(
+                                page_content="\n".join(lines),
+                                metadata={"source": display_name, "sheet": sheet},
+                            )
                         )
                 return excel_docs
             except Exception as e:
-                raise ValueError(f"Failed to parse Excel document {display_name}: {e}") from e
+                raise ValueError(
+                    f"Failed to parse Excel document {display_name}: {e}"
+                ) from e
 
         raise ValueError(f"Unsupported document format '{suffix}' for {display_name}")

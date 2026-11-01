@@ -1,6 +1,9 @@
 import json
+import logging
 
 from nursing_bot.models.litellm_client import LiteLLMClient
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryCondenser:
@@ -19,7 +22,8 @@ class HistoryCondenser:
             return query
 
         usable_history = [
-            m for m in history
+            m
+            for m in history
             if m.get("content") and not m.get("content", "").startswith("[BLOCKED")
         ]
         if not usable_history:
@@ -53,5 +57,8 @@ class HistoryCondenser:
 
             needs_context = parsed.get("needs_context", condensed != query)
             return condensed.strip() if needs_context is True else query
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Query condensation failed, returning original query: %s", exc
+            )
             return query

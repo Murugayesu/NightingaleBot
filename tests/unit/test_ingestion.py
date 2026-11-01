@@ -28,6 +28,29 @@ def test_document_loader_csv():
     assert "Bob" in docs[1].page_content
 
 
+def test_document_loader_docx_includes_tables():
+    import io
+
+    import docx
+
+    doc = docx.Document()
+    doc.add_paragraph("First paragraph text")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "ColA"
+    table.cell(0, 1).text = "ColB"
+    table.cell(1, 0).text = "Val1"
+    table.cell(1, 1).text = "Val2"
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    docs = DocumentLoaderFactory.load_bytes(buf.getvalue(), "report.docx")
+    assert len(docs) == 1
+    content = docs[0].page_content
+    assert "First paragraph text" in content
+    assert "ColA | ColB" in content
+    assert "Val1 | Val2" in content
+
+
 def test_structure_splitter_markdown():
     splitter = StructureSplitter(chunk_size=100, chunk_overlap=10)
     raw_md = """# Introduction
@@ -67,11 +90,12 @@ def test_add_context_headers():
 @pytest.mark.asyncio
 async def test_ingestion_pipeline_end_to_end():
     mock_llm_client = AsyncMock()
-    mock_llm_client.aembed_texts = AsyncMock(
-        return_value=[[0.05] * 1536]
-    )
+    mock_llm_client.embedding_model = "test-embed-model"
+    mock_llm_client.aembed_texts = AsyncMock(return_value=[[0.05] * 1536])
     mock_storage = AsyncMock()
-    mock_storage.download = AsyncMock(return_value=b"System overview and operating rules.")
+    mock_storage.download = AsyncMock(
+        return_value=b"System overview and operating rules."
+    )
 
     session = AsyncMock()
     doc_id = uuid.uuid4()

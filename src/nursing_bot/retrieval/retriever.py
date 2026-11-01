@@ -33,7 +33,24 @@ class PostgresHybridRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun | None = None,
     ) -> list[LCDocument]:
-        return asyncio.run(self._aget_relevant_documents(query, run_manager=run_manager))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            try:
+                import nest_asyncio
+
+                nest_asyncio.apply()
+                return loop.run_until_complete(
+                    self._aget_relevant_documents(query, run_manager=run_manager)
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+        return asyncio.run(
+            self._aget_relevant_documents(query, run_manager=run_manager)
+        )
 
     async def _aget_relevant_documents(
         self,
@@ -41,23 +58,42 @@ class PostgresHybridRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun | None = None,
     ) -> list[LCDocument]:
-        await enable_hnsw_iterative_scan(self.session)
+        return await self.asearch(
+            query=query,
+            session=self.session,
+            filters=self.default_filters,
+            top_k=self.top_k,
+        )
+
+    async def asearch(
+        self,
+        query: str,
+        session: Any = None,
+        filters: dict[str, Any] | None = None,
+        top_k: int | None = None,
+    ) -> list[LCDocument]:
+        active_session = session if session is not None else self.session
+        active_filters = filters if filters is not None else self.default_filters
+        active_top_k = top_k or self.top_k
+
+        if active_session is not None:
+            await enable_hnsw_iterative_scan(active_session)
 
         # 1. Dense vector search
         query_vector = await self.llm_client.aembed_query(query)
         dense_results = await run_dense_search(
-            session=self.session,
+            session=active_session,
             query_vector=query_vector,
-            limit=self.top_k * 2,
-            filters=self.default_filters,
+            limit=active_top_k * 2,
+            filters=active_filters,
         )
 
         # 2. Sparse full-text search
         sparse_results = await run_sparse_search(
-            session=self.session,
+            session=active_session,
             query=query,
-            limit=self.top_k * 2,
-            filters=self.default_filters,
+            limit=active_top_k * 2,
+            filters=active_filters,
         )
 
         # 3. Reciprocal Rank Fusion
@@ -73,7 +109,7 @@ class PostgresHybridRetriever(BaseRetriever):
             rrf_scores.keys(),
             key=lambda x: rrf_scores[x],
             reverse=True,
-        )[: self.top_k]
+        )[:active_top_k]
 
         candidates: list[dict[str, Any]] = []
         for chunk_id in sorted_ids:

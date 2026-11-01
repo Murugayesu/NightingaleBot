@@ -4,9 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from nursing_bot import __version__
 from nursing_bot.api.dependencies import get_db, get_pipeline_dep, get_storage_dep
 from nursing_bot.api.main import app
 from nursing_bot.api.security import limiter
+from nursing_bot.config import get_settings
 from nursing_bot.generation.pipeline import RAGResponse
 
 
@@ -66,7 +68,7 @@ async def test_root_and_health():
         res = await client.get("/")
         assert res.status_code == 200
         assert res.json()["status"] == "online"
-        assert res.json()["version"] == "0.2.0"
+        assert res.json()["version"] == __version__
 
         health_res = await client.get("/health")
         assert health_res.status_code == 200
@@ -93,11 +95,12 @@ async def test_document_upload_authorized(mock_db, mock_storage):
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_storage_dep] = lambda: mock_storage
 
+    admin_key = get_settings().ADMIN_API_KEY
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.post(
             "/api/v1/documents/upload",
-            headers={"X-Admin-API-Key": "admin-secret-key"},
+            headers={"X-Admin-API-Key": admin_key},
             files={"file": ("test.txt", b"Valid document content", "text/plain")},
             data={"doc_type": "policy"},
         )
@@ -125,6 +128,7 @@ async def test_chat_endpoint_success(mock_db, mock_pipeline):
 
 @pytest.mark.asyncio
 async def test_chat_rate_limiting(mock_db, mock_pipeline):
+    limiter.reset()
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_pipeline_dep] = lambda: mock_pipeline
 
@@ -137,6 +141,30 @@ async def test_chat_rate_limiting(mock_db, mock_pipeline):
 
         assert 200 in responses
         assert 429 in responses
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoints_require_auth(mock_db, mock_storage):
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_storage_dep] = lambda: mock_storage
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Without auth header
+        res_health = await client.get("/api/v1/admin/health")
+        assert res_health.status_code == 401
+
+        res_stats = await client.get("/api/v1/admin/stats")
+        assert res_stats.status_code == 401
+
+        # With auth header
+        admin_key = get_settings().ADMIN_API_KEY
+        headers = {"X-Admin-API-Key": admin_key}
+        res_health_auth = await client.get("/api/v1/admin/health", headers=headers)
+        assert res_health_auth.status_code == 200
+
+        res_stats_auth = await client.get("/api/v1/admin/stats", headers=headers)
+        assert res_stats_auth.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -70,11 +70,14 @@ def get_pipeline_dep(
         session=None,
         llm_client=llm_client,
         top_k=settings.RETRIEVAL_TOP_K,
-        rrf_k=60,
+        rrf_k=settings.RRF_K,
         rerank_enabled=settings.RERANK_ENABLED,
         rerank_top_n=settings.RERANK_TOP_K,
     )
-    gate = RelevanceGate(rrf_threshold=settings.GATE_THRESHOLD_RRF)
+    gate = RelevanceGate(
+        rrf_threshold=settings.GATE_THRESHOLD_RRF,
+        rerank_threshold=settings.GATE_THRESHOLD_RERANK,
+    )
     return GenerationPipeline(
         retriever=retriever,
         llm_client=llm_client,

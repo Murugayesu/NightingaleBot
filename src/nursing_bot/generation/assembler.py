@@ -31,11 +31,16 @@ class ContextAssembler:
                 source_meta.append(f"Institution: {doc.metadata['institution']}")
             if "source" in doc.metadata:
                 source_meta.append(f"Doc: {doc.metadata['source']}")
-            if "page_number" in doc.metadata and doc.metadata["page_number"] is not None:
+            if (
+                "page_number" in doc.metadata
+                and doc.metadata["page_number"] is not None
+            ):
                 source_meta.append(f"Page: {doc.metadata['page_number']}")
 
             meta_str = f" | {' | '.join(source_meta)}" if source_meta else ""
-            context_blocks.append(f"{source_label}{meta_str}\n{doc.page_content.strip()}\n")
+            context_blocks.append(
+                f"{source_label}{meta_str}\n{doc.page_content.strip()}\n"
+            )
 
             citations.append(
                 {

@@ -66,7 +66,8 @@ class EvaluationRunner:
             else:
                 lower_answer = response.answer.lower()
                 matched = [
-                    kw for kw in case.expected_answer_keywords
+                    kw
+                    for kw in case.expected_answer_keywords
                     if kw.lower() in lower_answer
                 ]
                 match_rate = (
@@ -96,7 +97,11 @@ class EvaluationRunner:
             total_cases=total,
             passed_cases=passed_count,
             accuracy_rate=passed_count / total if total > 0 else 0.0,
-            abstention_accuracy=abstention_correct / abstention_total if abstention_total > 0 else 1.0,
-            average_keyword_match=sum(keyword_matches) / len(keyword_matches) if keyword_matches else 0.0,
+            abstention_accuracy=abstention_correct / abstention_total
+            if abstention_total > 0
+            else 1.0,
+            average_keyword_match=sum(keyword_matches) / len(keyword_matches)
+            if keyword_matches
+            else 0.0,
             results=results,
         )

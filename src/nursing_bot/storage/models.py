@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -80,7 +81,9 @@ class Document(Base):
         if "error_message" in kwargs:
             kwargs["failure_reason"] = kwargs.pop("error_message")
         if "content_hash" not in kwargs:
-            kwargs["content_hash"] = "hash-" + str(uuid.uuid4())[:8]
+            kwargs["content_hash"] = hashlib.sha256(
+                str(uuid.uuid4()).encode()
+            ).hexdigest()
         kwargs.setdefault("total_chunks", 0)
         super().__init__(**kwargs)
 
@@ -215,4 +218,6 @@ class ChatMessage(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")
+    session: Mapped["ChatSession"] = relationship(
+        "ChatSession", back_populates="messages"
+    )

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import uuid
@@ -31,28 +32,28 @@ from nursing_bot.storage.object_store import S3Backend
 router = APIRouter(prefix="/documents", tags=["Documents"])
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 
 async def _read_upload_bounded(file: UploadFile) -> bytes:
-    if file.size is not None and file.size > MAX_FILE_SIZE_BYTES:
+    max_size = get_settings().MAX_UPLOAD_SIZE_BYTES
+    if file.size is not None and file.size > max_size:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Upload exceeds the {MAX_FILE_SIZE_BYTES}-byte limit.",
+            detail=f"Upload exceeds the {max_size}-byte limit.",
         )
 
     data = bytearray()
-    while len(data) <= MAX_FILE_SIZE_BYTES:
-        remaining = MAX_FILE_SIZE_BYTES + 1 - len(data)
+    while len(data) <= max_size:
+        remaining = max_size + 1 - len(data)
         block = await file.read(min(UPLOAD_READ_CHUNK_BYTES, remaining))
         if not block:
             break
         data.extend(block)
-    if len(data) > MAX_FILE_SIZE_BYTES:
+    if len(data) > max_size:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Upload exceeds the {MAX_FILE_SIZE_BYTES}-byte limit.",
+            detail=f"Upload exceeds the {max_size}-byte limit.",
         )
     return bytes(data)
 
@@ -76,6 +77,15 @@ async def upload_document(
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
+    content_hash = hashlib.sha256(data).hexdigest()
+
+    # Deduplication check: return existing document if identical file content was uploaded
+    dup_stmt = select(Document).where(Document.content_hash == content_hash)
+    dup_res = await db.execute(dup_stmt)
+    existing_doc = dup_res.scalar_one_or_none()
+    if existing_doc is not None:
+        return existing_doc
+
     filename = file.filename or "unnamed_document"
     suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     content_type = "tabular" if suffix in {"csv", "tsv", "xlsx", "json"} else "prose"
@@ -85,7 +95,9 @@ async def upload_document(
         try:
             parsed_metadata = json.loads(metadata_json)
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {exc}") from exc
+            raise HTTPException(
+                status_code=400, detail=f"Invalid metadata JSON: {exc}"
+            ) from exc
 
     doc_id = uuid.uuid4()
     s3_key = f"{doc_id}/{filename}"
@@ -98,6 +110,7 @@ async def upload_document(
         doc_type=doc_type,
         content_type=content_type,
         s3_key=s3_key,
+        content_hash=content_hash,
         status="pending",
         chunk_count=0,
         metadata_json=parsed_metadata,
@@ -107,19 +120,22 @@ async def upload_document(
     await db.refresh(doc)
 
     settings = get_settings()
-    if settings.INGESTION_MODE == "sync":
+    if settings.INGESTION_MODE == "inline":
         pipeline = IngestionPipeline(llm_client=llm_client, storage=storage)
         try:
             await pipeline.ingest_document(db, doc_id)
             await db.refresh(doc)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Sync ingestion failed for %s: %s", doc_id, exc)
+            logger.warning("Inline ingestion failed for %s: %s", doc_id, exc)
     else:
         try:
             from nursing_bot.workers.tasks import ingest_document_task
+
             await ingest_document_task.defer_async(document_id=str(doc_id))
         except Exception as exc:  # noqa: BLE001
-            logger.info("Background queue unavailable, proceeding with pending status: %s", exc)
+            logger.info(
+                "Background queue unavailable, proceeding with pending status: %s", exc
+            )
 
     return doc
 
@@ -190,8 +206,16 @@ async def delete_document(
 @router.get("/{document_id}/chunks", response_model=list[ChunkResponse])
 async def get_document_chunks(
     document_id: uuid.UUID,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Chunk).where(Chunk.document_id == document_id).order_by(Chunk.chunk_index.asc())
+    stmt = (
+        select(Chunk)
+        .where(Chunk.document_id == document_id)
+        .order_by(Chunk.chunk_index.asc())
+        .limit(limit)
+        .offset(offset)
+    )
     res = await db.execute(stmt)
     return res.scalars().all()

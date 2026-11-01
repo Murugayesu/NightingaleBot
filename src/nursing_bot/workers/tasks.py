@@ -33,11 +33,20 @@ async def ingest_document_task(document_id: str) -> None:
             await pipeline.ingest_document(session, doc_uuid)
             logger.info("Successfully ingested document %s in worker.", document_id)
     except Exception as exc:
-        logger.exception("Failed to ingest document %s in background worker.", document_id)
-        async with get_session() as session:
-            document = await session.get(Document, doc_uuid)
-            if document is not None:
-                document.status = "failed"
-                document.error_message = str(exc)
-                await session.commit()
+        logger.exception(
+            "Failed to ingest document %s in background worker.", document_id
+        )
+        try:
+            async with get_session() as session:
+                document = await session.get(Document, doc_uuid)
+                if document is not None:
+                    document.status = "failed"
+                    document.error_message = str(exc)
+                    await session.commit()
+        except Exception as commit_exc:  # noqa: BLE001
+            logger.error(
+                "Failed to persist failed state for document %s: %s",
+                document_id,
+                commit_exc,
+            )
         raise
