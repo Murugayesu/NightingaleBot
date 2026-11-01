@@ -1,0 +1,134 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    container_name: nursing-bot-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nursing_bot
+      PGDATA: /var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nursing_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: nursing-bot-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    env_file:
+      - .env
+    environment:
+      MC_HOST_local: http://minioadmin:minioadmin@minio:9000
+    depends_on:
+      minio:
+        condition: service_started
+    command: ["mb", "--ignore-existing", "local/${S3_BUCKET_NAME:-nursing-documents}"]
+    restart: on-failure
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: nursing-bot-phoenix
+    ports:
+      - "6006:6006"
+    volumes:
+      - phoenix_data:/root/.phoenix
+    restart: unless-stopped
+
+  api:
+    image: nursingbot-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nursing-bot-api
+    command: uvicorn nursing_bot.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/nursing_bot
+      S3_ENDPOINT_URL: http://minio:9000
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+      INGESTION_MODE: queue
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      GATE_THRESHOLD_RRF: "0.01"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10)"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    image: nursingbot-app:latest
+    container_name: nursing-bot-worker
+    command: procrastinate --app=nursing_bot.workers.tasks.app worker --concurrency=1
+    volumes:
+      - ./src:/app/src:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/nursing_bot
+      S3_ENDPOINT_URL: http://minio:9000
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+      INGESTION_MODE: queue
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      GATE_THRESHOLD_RRF: "0.01"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nursing-bot-caddy
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:
+  phoenix_data:
+  caddy_data:
+  caddy_config:
