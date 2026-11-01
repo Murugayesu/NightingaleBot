@@ -57,29 +57,39 @@ async def chat_endpoint(
     db: AsyncSession = Depends(get_db),
     pipeline: GenerationPipeline = Depends(get_pipeline_dep),
 ):
-    """Chat endpoint supporting synchronous response and SSE streaming, guarded by SlowAPI rate limits."""
+    """Chat endpoint supporting client-side sliding window, SSE streaming, and optional DB history."""
+    settings = get_settings()
     request_filters = (
         req.filters.model_dump(exclude_none=True) if req.filters is not None else None
     )
+    session_id = req.session_id or str(uuid.uuid4())
+
+    # Resolve context window: Client-side ephemeral context window takes precedence
+    if req.recent_context is not None:
+        history = [
+            {"role": t.role, "content": t.content}
+            for t in req.recent_context[-settings.MAX_RECENT_CONTEXT_TURNS:]
+        ]
+    elif settings.ENABLE_DATABASE_CHAT_HISTORY:
+        chat_session = await get_or_create_session(db, session_id)
+        history = await load_session_history(db, chat_session.id)
+    else:
+        history = []
 
     if req.stream:
-        session_id = req.session_id or str(uuid.uuid4())
-
         async def event_generator() -> AsyncIterator[str]:
+            full_answer: list[str] = []
             async with get_session() as stream_db:
-                chat_session = await get_or_create_session(stream_db, session_id)
-                history = await load_session_history(stream_db, chat_session.id)
-
-                stream_db.add(
-                    ChatMessage(
-                        session_id=chat_session.id,
-                        role="user",
-                        content=req.query,
+                if settings.ENABLE_DATABASE_CHAT_HISTORY:
+                    stream_session = await get_or_create_session(stream_db, session_id)
+                    stream_db.add(
+                        ChatMessage(
+                            session_id=stream_session.id,
+                            role="user",
+                            content=req.query,
+                        )
                     )
-                )
-                await stream_db.flush()
-
-                full_answer: list[str] = []
+                    await stream_db.flush()
 
                 async for evt in pipeline.astream_query(
                     session=stream_db,
@@ -96,10 +106,10 @@ async def chat_endpoint(
                     elif evt["type"] == "end":
                         yield f"event: end\ndata: {json.dumps(evt)}\n\n"
 
-                if full_answer:
+                if settings.ENABLE_DATABASE_CHAT_HISTORY and full_answer:
                     stream_db.add(
                         ChatMessage(
-                            session_id=chat_session.id,
+                            session_id=session_id,
                             role="assistant",
                             content="".join(full_answer),
                         )
@@ -116,11 +126,11 @@ async def chat_endpoint(
             },
         )
 
-    chat_session = await get_or_create_session(db, req.session_id)
-    history = await load_session_history(db, chat_session.id)
-
-    db.add(ChatMessage(session_id=chat_session.id, role="user", content=req.query))
-    await db.flush()
+    # Synchronous flow
+    if settings.ENABLE_DATABASE_CHAT_HISTORY:
+        chat_session = await get_or_create_session(db, session_id)
+        db.add(ChatMessage(session_id=chat_session.id, role="user", content=req.query))
+        await db.flush()
 
     response = await pipeline.aquery(
         session=db,
@@ -130,13 +140,14 @@ async def chat_endpoint(
         top_k=req.top_k,
     )
 
-    db.add(ChatMessage(session_id=chat_session.id, role="assistant", content=response.answer))
-    await db.commit()
+    if settings.ENABLE_DATABASE_CHAT_HISTORY:
+        db.add(ChatMessage(session_id=session_id, role="assistant", content=response.answer))
+        await db.commit()
 
     return ChatResponse(
         answer=response.answer,
         citations=[CitationItem(**c) for c in response.citations],
-        session_id=chat_session.id,
+        session_id=session_id,
         is_grounded=response.is_grounded,
         gate_passed=response.gate_passed,
         top_score=response.top_score,
@@ -158,6 +169,11 @@ async def get_session_history(
     res = await db.execute(stmt)
     messages = res.scalars().all()
     if not messages:
+        if not get_settings().ENABLE_DATABASE_CHAT_HISTORY:
+            return ConversationHistoryResponse(
+                session_id=session_id,
+                messages=[],
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Session {session_id} not found.",

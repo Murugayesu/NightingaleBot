@@ -14,6 +14,7 @@ class HistoryCondenser:
         query: str,
         history: list[dict[str, str]] | None = None,
     ) -> str:
+        # If client does not send recent context, skip immediately with zero LLM latency
         if not history or not self.llm_client:
             return query
 
@@ -31,7 +32,8 @@ class HistoryCondenser:
             "topics, or assumptions. If self-contained, return the question unchanged. "
             "Return only valid JSON with boolean 'needs_context' and string 'query'."
         )
-        prompt = json.dumps({"history": usable_history[-4:], "question": query})
+        # Bounded sliding window to the last 2 turns (1 pair of user + assistant)
+        prompt = json.dumps({"history": usable_history[-2:], "question": query})
 
         try:
             raw = await self.llm_client.acomplete(

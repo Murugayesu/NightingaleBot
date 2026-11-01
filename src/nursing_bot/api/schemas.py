@@ -13,12 +13,21 @@ class FilterPayload(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChatContextTurn(BaseModel):
+    role: str = Field(..., description="Role: 'user' or 'assistant'")
+    content: str = Field(..., max_length=2000, description="Message text")
+
+
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=4000)
     session_id: str | None = None
     stream: bool = False
     filters: FilterPayload | None = None
     top_k: int | None = Field(default=None, ge=1, le=50)
+    recent_context: list[ChatContextTurn] | None = Field(
+        default=None,
+        description="Client-side ephemeral context window (last 1-2 conversation turns) for website widgets.",
+    )
 
 
 class CitationItem(BaseModel):

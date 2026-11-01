@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 
 from nursing_bot.api.dependencies import get_db, get_pipeline_dep, get_storage_dep
 from nursing_bot.api.main import app
+from nursing_bot.api.security import limiter
 from nursing_bot.generation.pipeline import RAGResponse
 
 
@@ -136,3 +137,29 @@ async def test_chat_rate_limiting(mock_db, mock_pipeline):
 
         assert 200 in responses
         assert 429 in responses
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_client_side_sliding_window(mock_db, mock_pipeline):
+    limiter.reset()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_pipeline_dep] = lambda: mock_pipeline
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        payload = {
+            "query": "Where should that be displayed?",
+            "recent_context": [
+                {"role": "user", "content": "Tell me about registration certificate."},
+                {"role": "assistant", "content": "You must obtain it from TNNMC."},
+            ],
+        }
+        res = await client.post("/api/v1/chat", json=payload)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["is_grounded"] is True
+        # Verify pipeline was called with history passed from client
+        mock_pipeline.aquery.assert_called_once()
+        call_kwargs = mock_pipeline.aquery.call_args.kwargs
+        assert len(call_kwargs["history"]) == 2
+        assert call_kwargs["history"][0]["role"] == "user"

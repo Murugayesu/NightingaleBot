@@ -63,6 +63,19 @@ async def test_condenser_resolves_reference():
 
 
 @pytest.mark.asyncio
+async def test_condenser_standalone_query_bypasses_llm():
+    mock_llm = AsyncMock()
+    mock_llm.acomplete = AsyncMock()
+    condenser = HistoryCondenser(mock_llm)
+    history = []
+    query = "Where is the Tamil Nadu Nursing Council headquarters located?"
+    condensed = await condenser.condense(query, history)
+    assert condensed == query
+    # Verify LLM was NOT called when history is empty, preserving latency and zero token cost!
+    mock_llm.acomplete.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_generation_pipeline_aquery():
     mock_retriever = AsyncMock()
     retrieved_doc = LCDocument(

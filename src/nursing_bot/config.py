@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     # Ingestion Controls
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MiB
 
+    # Chat Session Architecture (Client-Side Ephemeral Sliding Window)
+    ENABLE_DATABASE_CHAT_HISTORY: bool = False
+    MAX_RECENT_CONTEXT_TURNS: int = 2
+
     def validate_production(self) -> None:
         """Validate safety requirements when running in production."""
         if self.ENVIRONMENT == "production":
