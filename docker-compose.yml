@@ -32,7 +32,7 @@ services:
       - minio_data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -50,7 +50,7 @@ services:
     restart: on-failure
 
   phoenix:
-    image: arizephoenix/phoenix:7.18.0
+    image: ${PHOENIX_IMAGE:-arizephoenix/phoenix:latest}
     container_name: nursing-bot-phoenix
     ports:
       - "6006:6006"

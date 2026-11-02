@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FilterPayload(BaseModel):
@@ -63,6 +63,8 @@ class ConversationHistoryResponse(BaseModel):
 
 
 class DocumentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     filename: str
     doc_type: str
@@ -77,11 +79,15 @@ class DocumentResponse(BaseModel):
 
 
 class DocumentListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     documents: list[DocumentResponse]
     total: int
 
 
 class ChunkResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     document_id: uuid.UUID
     chunk_index: int
