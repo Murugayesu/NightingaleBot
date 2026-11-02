@@ -16,7 +16,7 @@ class VerificationResult:
 class CitationCoverageVerifier:
     """Verifies and normalizes inline citation tags ([Source N])."""
 
-    SOURCE_TAG = re.compile(r"\[Source\s+(\d+)\]")
+    SOURCE_TAG = re.compile(r"\[Source\s+(\d+)\]", re.IGNORECASE)
     SOURCE_MENTION = re.compile(r"\[Sources?\b", re.IGNORECASE)
     SOURCE_GROUP = re.compile(
         r"\[Sources?\s+\d+(?:\s*(?:,|;|&|\band\b)\s*(?:Sources?\s+)?\d+)*\]",

@@ -14,7 +14,10 @@ def test_pii_redaction_span_processor():
     mock_span = MagicMock()
     mock_span._attributes = {
         "input.value": "Contact test user at alice@example.com or 555-432-1098",
-        "llm.prompts": "User phone: 555-432-1098",
+        "llm.prompts": [
+            "User phone: 555-432-1098",
+            {"role": "user", "content": "Doctor email: doc@hospital.org"},
+        ],
         "other.key": "Unmodified text",
     }
 
@@ -24,6 +27,9 @@ def test_pii_redaction_span_processor():
     assert "[EMAIL_REDACTED]" in mock_span._attributes["input.value"]
     assert "555-432-1098" not in mock_span._attributes["input.value"]
     assert "[PHONE_REDACTED]" in mock_span._attributes["input.value"]
+    # Check nested list and dict redaction
+    assert "[PHONE_REDACTED]" in mock_span._attributes["llm.prompts"][0]
+    assert "[EMAIL_REDACTED]" in mock_span._attributes["llm.prompts"][1]["content"]
     assert mock_span._attributes["other.key"] == "Unmodified text"
 
 

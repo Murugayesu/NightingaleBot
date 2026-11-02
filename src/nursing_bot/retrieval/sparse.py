@@ -50,10 +50,11 @@ async def run_sparse_search(
         rows = result.mappings().all()
 
     if not rows and query.strip():
+        stop_words = {"not", "and", "or"}
         tokens = [
             t
             for t in "".join(c if c.isalnum() else " " for c in query).split()
-            if len(t) > 2
+            if len(t) > 2 and t.lower() not in stop_words
         ]
         if tokens:
             or_query = " | ".join(tokens)
@@ -71,8 +72,9 @@ async def run_sparse_search(
                 LIMIT :limit
             """
             try:
-                result = await session.execute(text(or_sql), or_params)
-                rows = result.mappings().all()
+                async with session.begin_nested():
+                    result = await session.execute(text(or_sql), or_params)
+                    rows = result.mappings().all()
             except Exception:  # noqa: BLE001, S110
                 pass
 

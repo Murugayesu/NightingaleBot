@@ -82,23 +82,47 @@ class DocumentLoaderFactory:
                     f"Failed to parse PDF document {display_name}: {e}"
                 ) from e
 
-        if suffix in {".docx", ".doc"}:
+        if suffix == ".doc":
+            raise ValueError(
+                f"Legacy Word binary format (.doc) is not supported for {display_name}. "
+                "Please convert to modern .docx format."
+            )
+
+        if suffix == ".docx":
             try:
                 import docx
+                from docx.table import Table
+                from docx.text.paragraph import Paragraph
 
                 doc = docx.Document(str(path))
                 parts: list[str] = []
-                for p in doc.paragraphs:
-                    if p.text.strip():
-                        parts.append(p.text.strip())
-                for table in doc.tables:
-                    table_rows: list[str] = []
-                    for row in table.rows:
-                        row_cells = [cell.text.strip() for cell in row.cells]
-                        if any(row_cells):
-                            table_rows.append(" | ".join(row_cells))
-                    if table_rows:
-                        parts.append("\n".join(table_rows))
+                for child in doc.element.body:
+                    if child.tag.endswith("p"):
+                        p = Paragraph(child, doc)
+                        if p.text.strip():
+                            parts.append(p.text.strip())
+                    elif child.tag.endswith("tbl"):
+                        table = Table(child, doc)
+                        table_rows: list[str] = []
+                        for row in table.rows:
+                            row_cells = [cell.text.strip() for cell in row.cells]
+                            if any(row_cells):
+                                table_rows.append(" | ".join(row_cells))
+                        if table_rows:
+                            parts.append("\n".join(table_rows))
+
+                if not parts:
+                    for p in doc.paragraphs:
+                        if p.text.strip():
+                            parts.append(p.text.strip())
+                    for table in doc.tables:
+                        table_rows = [
+                            " | ".join(cell.text.strip() for cell in row.cells)
+                            for row in table.rows
+                        ]
+                        if any(table_rows):
+                            parts.append("\n".join(table_rows))
+
                 return [
                     Document(
                         page_content="\n\n".join(parts),
@@ -110,7 +134,13 @@ class DocumentLoaderFactory:
                     f"Failed to parse DOCX document {display_name}: {e}"
                 ) from e
 
-        if suffix in {".xlsx", ".xls"}:
+        if suffix == ".xls":
+            raise ValueError(
+                f"Legacy Excel binary format (.xls) is not supported for {display_name}. "
+                "Please convert to modern .xlsx format."
+            )
+
+        if suffix == ".xlsx":
             try:
                 import openpyxl
 

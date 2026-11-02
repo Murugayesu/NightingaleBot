@@ -116,8 +116,17 @@ async def upload_document(
         metadata_json=parsed_metadata,
     )
     db.add(doc)
-    await db.commit()
-    await db.refresh(doc)
+    try:
+        await db.commit()
+        await db.refresh(doc)
+    except Exception:
+        try:
+            await storage.delete(s3_key)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to clean up orphaned S3 object %s: %s", s3_key, cleanup_exc
+            )
+        raise
 
     settings = get_settings()
     if settings.INGESTION_MODE == "inline":

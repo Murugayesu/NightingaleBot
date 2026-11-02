@@ -5,6 +5,8 @@ _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\
 _PHONE_PATTERN = re.compile(
     r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
 )
+_INDIAN_PHONE_PATTERN = re.compile(r"\b(?:\+91[-.\s]?)?[6-9]\d{4}[-.\s]?\d{5}\b")
+_AADHAAR_OR_GOV_ID = re.compile(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}\b")
 _INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(?:all\s+)?previous\s+instructions", re.IGNORECASE),
     re.compile(r"system\s+prompt\s+override", re.IGNORECASE),
@@ -53,6 +55,8 @@ class InputGuard:
 
         sanitized = _EMAIL_PATTERN.sub("[EMAIL]", trimmed)
         sanitized = _PHONE_PATTERN.sub("[PHONE]", sanitized)
+        sanitized = _INDIAN_PHONE_PATTERN.sub("[PHONE]", sanitized)
+        sanitized = _AADHAAR_OR_GOV_ID.sub("[ID]", sanitized)
 
         return GuardrailDecision(
             is_safe=True,

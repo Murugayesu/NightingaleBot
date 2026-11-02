@@ -48,6 +48,16 @@ class PostgresHybridRetriever(BaseRetriever):
                 )
             except Exception:  # noqa: BLE001, S110
                 pass
+
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self._aget_relevant_documents(query, run_manager=run_manager),
+                )
+                return future.result()
+
         return asyncio.run(
             self._aget_relevant_documents(query, run_manager=run_manager)
         )

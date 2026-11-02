@@ -121,6 +121,10 @@ class Settings(BaseSettings):
                 )
             if self.DATABASE_URL.startswith("sqlite"):
                 raise ValueError("SQLite is not supported in production.")
+            if "postgres:postgres@" in self.DATABASE_URL:
+                raise ValueError(
+                    "Default PostgreSQL credentials ('postgres:postgres') must not be used in production."
+                )
 
 
 @lru_cache

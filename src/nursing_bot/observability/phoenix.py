@@ -30,6 +30,18 @@ class PIIRedactionSpanProcessor(SpanProcessor):
         }
     )
 
+    @classmethod
+    def _redact_value(cls, val: Any) -> Any:
+        if isinstance(val, str):
+            res = _PHONE_PATTERN.sub("[PHONE_REDACTED]", val)
+            res = _EMAIL_PATTERN.sub("[EMAIL_REDACTED]", res)
+            return _ID_PATTERN.sub("[ID_REDACTED]", res)
+        if isinstance(val, list):
+            return [cls._redact_value(item) for item in val]
+        if isinstance(val, dict):
+            return {k: cls._redact_value(v) for k, v in val.items()}
+        return val
+
     def on_start(self, span, parent_context=None):
         pass
 
@@ -39,13 +51,13 @@ class PIIRedactionSpanProcessor(SpanProcessor):
 
         redacted_attributes = dict(span._attributes)
         for key, val in list(redacted_attributes.items()):
-            if isinstance(val, str) and (
-                key in self.PII_KEYS or "prompt" in key or "input" in key
+            if (
+                key in self.PII_KEYS
+                or "prompt" in key
+                or "input" in key
+                or "output" in key
             ):
-                redacted = _PHONE_PATTERN.sub("[PHONE_REDACTED]", val)
-                redacted = _EMAIL_PATTERN.sub("[EMAIL_REDACTED]", redacted)
-                redacted = _ID_PATTERN.sub("[ID_REDACTED]", redacted)
-                redacted_attributes[key] = redacted
+                redacted_attributes[key] = self._redact_value(val)
 
         span._attributes = redacted_attributes
 

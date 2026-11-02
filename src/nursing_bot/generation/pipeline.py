@@ -195,6 +195,12 @@ class GenerationPipeline:
             gate_passed=True,
         )
 
+        if not verification.is_grounded:
+            yield {
+                "type": "token",
+                "content": f"\n\n[Warning: {settings.RAG_ABSTENTION_MESSAGE}]",
+            }
+
         yield {
             "type": "end",
             "citations": assembled.citations if verification.is_grounded else [],

@@ -1,6 +1,7 @@
 import json
 import logging
 
+from nursing_bot.config import get_settings
 from nursing_bot.models.litellm_client import LiteLLMClient
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,11 @@ class HistoryCondenser:
             "topics, or assumptions. If self-contained, return the question unchanged. "
             "Return only valid JSON with boolean 'needs_context' and string 'query'."
         )
-        # Bounded sliding window to the last 2 turns (1 pair of user + assistant)
-        prompt = json.dumps({"history": usable_history[-2:], "question": query})
+        settings = get_settings()
+        turns_limit = max(1, settings.MAX_RECENT_CONTEXT_TURNS)
+        prompt = json.dumps(
+            {"history": usable_history[-turns_limit:], "question": query}
+        )
 
         try:
             raw = await self.llm_client.acomplete(
@@ -46,9 +50,19 @@ class HistoryCondenser:
                 temperature=0.0,
             )
             text = raw.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text
-                text = text.rsplit("```", 1)[0].strip()
+            if "```" in text:
+                fence_start = text.find("```")
+                fence_end = text.rfind("```")
+                if fence_start != -1 and fence_end > fence_start:
+                    inner = text[fence_start + 3 : fence_end].strip()
+                    if inner.startswith("json"):
+                        inner = inner[4:].strip()
+                    text = inner
+
+            start_brace = text.find("{")
+            end_brace = text.rfind("}")
+            if start_brace != -1 and end_brace > start_brace:
+                text = text[start_brace : end_brace + 1]
 
             parsed = json.loads(text)
             condensed = parsed.get("query") if isinstance(parsed, dict) else None

@@ -49,6 +49,26 @@ def test_citation_verifier_grouped_normalization():
     assert "[Sources 1, 2]" not in res.final_answer
 
 
+def test_citation_verifier_case_insensitive():
+    answer = "The standard term is 3 years according to [source 1]."
+    citations = [
+        {"source_index": 1, "chunk_id": "c1", "document_id": "d1"},
+    ]
+    res = CitationCoverageVerifier.verify(answer, citations, gate_passed=True)
+    assert res.is_grounded is True
+    assert "[Source 1]" in res.final_answer or "[source 1]" in res.final_answer
+
+
+def test_guardrails_indian_pii_redaction():
+    text = "Call me at +91 9876543210 with Aadhaar 1234 5678 9012"
+    decision = InputGuard.check_and_sanitize(text)
+    assert decision.is_safe
+    assert "+91 9876543210" not in decision.sanitized_query
+    assert "[PHONE]" in decision.sanitized_query
+    assert "1234 5678 9012" not in decision.sanitized_query
+    assert "[ID]" in decision.sanitized_query
+
+
 def test_citation_verifier_hallucinated_source():
     answer = "The fee is 500 dollars [Source 99]."
     citations = [
