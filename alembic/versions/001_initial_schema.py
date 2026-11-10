@@ -5,10 +5,12 @@ Revises:
 Create Date: 2026-11-01 12:00:00.000000
 
 """
-from alembic import op
+
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "001_initial_schema"
 down_revision = None
@@ -40,13 +42,32 @@ def upgrade() -> None:
         sa.Column("s3_version_id", sa.String(length=256), nullable=True),
         sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column("content_type", sa.String(length=32), nullable=False),
-        sa.Column("doc_type", sa.String(length=64), nullable=False, server_default="general"),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default="pending"),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="{}"),
+        sa.Column(
+            "doc_type", sa.String(length=64), nullable=False, server_default="general"
+        ),
+        sa.Column(
+            "status", sa.String(length=32), nullable=False, server_default="pending"
+        ),
+        sa.Column(
+            "metadata",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default="{}",
+        ),
         sa.Column("total_chunks", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("failure_reason", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_documents_content_hash", "documents", ["content_hash"])
     op.create_index("ix_documents_status", "documents", ["status"])
@@ -54,20 +75,52 @@ def upgrade() -> None:
     op.create_table(
         "chunks",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("document_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "document_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("documents.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("contextualised_text", sa.Text(), nullable=False),
         sa.Column("embedding", Vector(1536), nullable=False),
-        sa.Column("embedding_model", sa.String(length=128), nullable=False, server_default="openai/text-embedding-3-small"),
+        sa.Column(
+            "embedding_model",
+            sa.String(length=128),
+            nullable=False,
+            server_default="openai/text-embedding-3-small",
+        ),
         sa.Column("token_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("page_number", sa.Integer(), nullable=True),
-        sa.Column("heading_hierarchy", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="[]"),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="{}"),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default="active"),
+        sa.Column(
+            "heading_hierarchy",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default="[]",
+        ),
+        sa.Column(
+            "metadata",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default="{}",
+        ),
+        sa.Column(
+            "status", sa.String(length=32), nullable=False, server_default="active"
+        ),
         sa.Column("tsv", postgresql.TSVECTOR(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_chunks_document_id", "chunks", ["document_id"])
     op.create_index("ix_chunks_status", "chunks", ["status"])
@@ -84,7 +137,9 @@ def upgrade() -> None:
     op.create_index("idx_chunks_tsv_gin", "chunks", ["tsv"], postgresql_using="gin")
 
     # GIN index for JSONB metadata filtering
-    op.execute("CREATE INDEX idx_chunks_metadata_gin ON chunks USING gin (metadata jsonb_path_ops);")
+    op.execute(
+        "CREATE INDEX idx_chunks_metadata_gin ON chunks USING gin (metadata jsonb_path_ops);"
+    )
 
     # Trigger to maintain tsv column from contextualised_text
     op.execute(
@@ -104,18 +159,43 @@ def upgrade() -> None:
     op.create_table(
         "chat_sessions",
         sa.Column("id", sa.String(length=128), primary_key=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
 
     op.create_table(
         "chat_messages",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("session_id", sa.String(length=128), sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "session_id",
+            sa.String(length=128),
+            sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("role", sa.String(length=32), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("citations", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="[]"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "citations",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default="[]",
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_chat_messages_session_id", "chat_messages", ["session_id"])
 

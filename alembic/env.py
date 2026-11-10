@@ -1,24 +1,29 @@
 import asyncio
+import logging
+import sys
 from logging.config import fileConfig
 from pathlib import Path
-import sys
 
-from alembic import context
 from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
 
 # Ensure src/ directory is on sys.path
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from nursing_bot.config import get_settings  # noqa: E402
-from nursing_bot.storage.models import Base  # noqa: E402
+from nursing_bot.config import get_settings
+from nursing_bot.storage.models import Base
 
 config = context.config
 
-if config.config_file_name is not None:
+# Use alembic.ini's logging only when run as the `alembic` command. When called
+# from `nursing_bot.cli migrate`, the app's logging is already configured and a
+# second handler would print every line twice.
+if config.config_file_name is not None and not logging.getLogger().handlers:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
@@ -26,6 +31,28 @@ target_metadata = Base.metadata
 
 def get_url():
     return get_settings().DATABASE_URL
+
+
+def run_migrations_offline() -> None:
+    """Emit SQL to stdout instead of executing it (`alembic upgrade head --sql`).
+
+    Useful when a DBA must review the DDL before it touches a production
+    database, which is a common requirement for government deployments.
+    No connection is opened, so the CREATE EXTENSION statements are emitted
+    as literal SQL for the reviewer to run.
+    """
+    context.configure(
+        url=get_url(),
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+    )
+
+    with context.begin_transaction():
+        context.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        context.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
@@ -62,6 +89,6 @@ def run_migrations_online() -> None:
 
 
 if context.is_offline_mode():
-    raise NotImplementedError("Offline migrations not supported")
+    run_migrations_offline()
 else:
     run_migrations_online()

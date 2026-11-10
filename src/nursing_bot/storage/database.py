@@ -1,3 +1,5 @@
+"""Async engine and session factory (one engine per process, created lazily)."""
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -25,7 +27,6 @@ def get_engine() -> AsyncEngine:
             max_overflow=settings.DATABASE_MAX_OVERFLOW,
             pool_pre_ping=True,
             pool_recycle=1800,
-            echo=False,
         )
     return _engine
 
@@ -33,19 +34,14 @@ def get_engine() -> AsyncEngine:
 def get_session_maker() -> async_sessionmaker[AsyncSession]:
     global _session_maker
     if _session_maker is None:
-        engine = get_engine()
-        _session_maker = async_sessionmaker(
-            bind=engine,
-            class_=AsyncSession,
-            expire_on_commit=False,
-        )
+        _session_maker = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
     return _session_maker
 
 
 @asynccontextmanager
 async def get_session() -> AsyncIterator[AsyncSession]:
-    session_maker = get_session_maker()
-    async with session_maker() as session:
+    """Yield a session; roll back if the caller raises. Callers commit explicitly."""
+    async with get_session_maker()() as session:
         try:
             yield session
         except Exception:
@@ -53,6 +49,19 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+async def dispose_engine() -> None:
+    global _engine, _session_maker
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _session_maker = None
+
+
 async def enable_hnsw_iterative_scan(session: AsyncSession) -> None:
-    """Enable relaxed_order iterative scan on pgvector to prevent empty candidate sets during post-filtering."""
+    """Let pgvector keep scanning the HNSW graph when filters remove candidates.
+
+    Without this, a filtered vector query can return fewer than LIMIT rows (or
+    none) even though matching chunks exist. SET LOCAL lasts until the current
+    transaction ends. Requires pgvector >= 0.8.
+    """
     await session.execute(text("SET LOCAL hnsw.iterative_scan = 'relaxed_order'"))

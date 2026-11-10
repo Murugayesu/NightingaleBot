@@ -1,3 +1,3 @@
-"""TNNMC NursingBot Production Hybrid RAG System."""
+"""TNNMC NursingBot: hybrid RAG knowledge assistant."""
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
