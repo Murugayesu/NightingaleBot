@@ -12,6 +12,8 @@ Python package pins live in `pyproject.toml` / `uv.lock`; only versions added or
 | opentelemetry-instrumentation-sqlalchemy | 0.66b2 | 2026-11-06 | PyPI | Same as above. |
 | mypy | 2.4.1 | 2026-11-06 | PyPI | Dev only. |
 | ragas | not used | 2026-11-06 | PyPI | 0.4.3 (newest, 2026-01-13) fails to import with the pinned LangChain (`langchain_community.chat_models.vertexai` removed) and downgrades fsspec/jiter/rich. Equivalent metrics implemented in `evaluation/judge.py`. |
+| pypdf | 6.21.4 | 2026-11-10 | PyPI | Upgraded from 6.21.2: 7 advisories (crafted PDF → excessive runtime/memory). |
+| filelock (transitive) | 3.32.7 | 2026-11-10 | PyPI | 13 advisories, fixed in 4.2.1+, but litellm 1.106.5 requires `filelock<4`. Low exposure (needs a hostile local user). Accepted in `.github/pip-audit-ignore.txt`; remove when litellm allows filelock 4. |
 | pgvector/pgvector image | 0.8.7-pg18-trixie | 2026-11-06 | Docker Hub | Already in use; unchanged. |
 | otel/opentelemetry-collector-contrib | 0.164.0 | 2026-11-06 | GitHub releases / Docker Hub | |
 | arizephoenix/phoenix | version-21.0.0 | 2026-11-06 | GitHub releases / Docker Hub | Only just past the 7-day wait (7.4 days). |

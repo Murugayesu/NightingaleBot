@@ -1,0 +1,20 @@
+# Vulnerability advisories accepted in CI (pip-audit --ignore-vuln).
+# Every entry needs a reason and a removal condition. Review on each dependency upgrade.
+#
+# filelock 3.32.7 (13 advisories): SQLite-backed ReadWriteLock naming issues that need a hostile
+# local user on the same machine; not exploitable in the single-purpose app container.
+# Fix (filelock>=4.2.1) is blocked: litellm 1.106.5 requires filelock<4.
+# Remove these lines when litellm allows filelock 4.
+CVE-2026-112940
+CVE-2026-112913
+CVE-2026-112907
+CVE-2026-112938
+CVE-2026-112936
+CVE-2026-112910
+CVE-2026-112909
+CVE-2026-112911
+CVE-2026-112939
+CVE-2026-112915
+CVE-2026-112935
+CVE-2026-112912
+CVE-2026-112908
