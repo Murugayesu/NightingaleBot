@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>NursingBot Admin</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./admin.css">
+  <script type="module" src="./admin.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="topbar-title">NursingBot Admin</h1>
+    <button type="button" id="logout" class="btn btn--ghost" hidden>Log out</button>
+  </header>
+
+  <!-- Short status messages ("Uploaded", "Deleted", errors) are announced here. -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- ============ Login ============ -->
+  <main id="login-view" class="login" hidden>
+    <form id="login-form" class="card login-card" novalidate>
+      <h2>Sign in</h2>
+      <p class="muted">Enter the admin API key configured on the server.</p>
+      <label for="api-key">Admin API key</label>
+      <input id="api-key" type="password" autocomplete="off" spellcheck="false" required>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button type="submit" id="login-submit" class="btn btn--primary">Sign in</button>
+    </form>
+  </main>
+
+  <!-- ============ Dashboard ============ -->
+  <div id="dashboard-view" class="dashboard" hidden>
+    <nav class="tabs" role="tablist" aria-label="Admin sections">
+      <button type="button" role="tab" class="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+      <button type="button" role="tab" class="tab" id="tab-documents" aria-controls="panel-documents" aria-selected="false" tabindex="-1">Documents</button>
+      <button type="button" role="tab" class="tab" id="tab-upload" aria-controls="panel-upload" aria-selected="false" tabindex="-1">Upload</button>
+      <button type="button" role="tab" class="tab" id="tab-maintenance" aria-controls="panel-maintenance" aria-selected="false" tabindex="-1">Maintenance</button>
+      <button type="button" role="tab" class="tab" id="tab-evaluation" aria-controls="panel-evaluation" aria-selected="false" tabindex="-1">Evaluation</button>
+    </nav>
+
+    <!-- ---------- Overview ---------- -->
+    <section id="panel-overview" class="panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+      <div class="panel-head">
+        <h2>Overview</h2>
+        <button type="button" id="overview-refresh" class="btn btn--secondary">Refresh</button>
+      </div>
+      <p id="overview-error" class="form-error" role="alert" hidden></p>
+      <div class="grid-2">
+        <div class="card">
+          <h3>System health</h3>
+          <dl id="health-list" class="kv"></dl>
+        </div>
+        <div class="card">
+          <h3>Statistics</h3>
+          <dl id="stats-list" class="kv"></dl>
+          <h4>Documents by status</h4>
+          <ul id="stats-by-status" class="badge-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- Documents ---------- -->
+    <section id="panel-documents" class="panel" role="tabpanel" aria-labelledby="tab-documents" tabindex="0" hidden>
+      <div class="panel-head">
+        <h2>Documents</h2>
+        <button type="button" id="docs-refresh" class="btn btn--secondary">Refresh</button>
+      </div>
+      <form id="docs-filters" class="filters">
+        <div class="field">
+          <label for="filter-doc-type">Doc type</label>
+          <input id="filter-doc-type" list="doc-type-suggestions" placeholder="any" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="filter-status">Status</label>
+          <select id="filter-status">
+            <option value="">any</option>
+            <option value="pending">pending</option>
+            <option value="processing">processing</option>
+            <option value="completed">completed</option>
+            <option value="failed">failed</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn--primary">Apply filters</button>
+      </form>
+      <p id="docs-error" class="form-error" role="alert" hidden></p>
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="visually-hidden">Uploaded documents</caption>
+          <thead>
+            <tr>
+              <th scope="col">Filename</th>
+              <th scope="col">Doc type</th>
+              <th scope="col">Content type</th>
+              <th scope="col">Status</th>
+              <th scope="col" class="num">Chunks</th>
+              <th scope="col">Updated</th>
+              <th scope="col">Error</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="docs-body"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button type="button" id="docs-prev" class="btn btn--secondary">Previous</button>
+        <span id="docs-page-info" class="muted"></span>
+        <button type="button" id="docs-next" class="btn btn--secondary">Next</button>
+      </div>
+
+      <section id="chunks-panel" class="card chunks-panel" aria-labelledby="chunks-title" tabindex="-1" hidden>
+        <div class="panel-head">
+          <h3 id="chunks-title">Chunks</h3>
+          <button type="button" id="chunks-close" class="btn btn--ghost">Close</button>
+        </div>
+        <p id="chunks-status" class="muted"></p>
+        <ol id="chunks-list" class="chunks-list"></ol>
+        <button type="button" id="chunks-more" class="btn btn--secondary" hidden>Load more</button>
+      </section>
+    </section>
+
+    <!-- ---------- Upload ---------- -->
+    <section id="panel-upload" class="panel" role="tabpanel" aria-labelledby="tab-upload" tabindex="0" hidden>
+      <h2>Upload a document</h2>
+      <form id="upload-form" class="card upload-form" novalidate>
+        <div class="field">
+          <label for="upload-file">File</label>
+          <input id="upload-file" type="file" accept=".pdf,.docx,.txt,.md,.markdown,.csv,.tsv,.xlsx,.json" required aria-describedby="upload-file-hint">
+          <p id="upload-file-hint" class="hint">Supported: PDF, DOCX, TXT, Markdown, CSV, TSV, XLSX, JSON.</p>
+        </div>
+        <div class="field">
+          <label for="upload-doc-type">Doc type</label>
+          <input id="upload-doc-type" list="doc-type-suggestions" value="general" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="upload-metadata">Metadata (optional JSON object)</label>
+          <textarea id="upload-metadata" rows="4" spellcheck="false" placeholder='{"year": 2025, "source": "council circular"}' aria-describedby="upload-metadata-error"></textarea>
+          <p id="upload-metadata-error" class="form-error" hidden></p>
+        </div>
+        <div class="upload-actions">
+          <button type="submit" id="upload-submit" class="btn btn--primary">Upload</button>
+          <progress id="upload-progress" max="100" value="0" hidden>0%</progress>
+        </div>
+        <div id="upload-result" class="result" role="status" hidden></div>
+      </form>
+    </section>
+
+    <!-- ---------- Maintenance ---------- -->
+    <section id="panel-maintenance" class="panel" role="tabpanel" aria-labelledby="tab-maintenance" tabindex="0" hidden>
+      <h2>Maintenance</h2>
+      <div class="card">
+        <h3>Re-index all documents</h3>
+        <p class="muted">Re-ingests every document. Use this after changing the embedding model, or when the
+          Overview shows stale embedding chunks.</p>
+        <button type="button" id="reindex" class="btn btn--danger">Re-index all documents</button>
+        <div id="reindex-result" class="result" role="status" hidden></div>
+      </div>
+    </section>
+
+    <!-- ---------- Evaluation ---------- -->
+    <section id="panel-evaluation" class="panel" role="tabpanel" aria-labelledby="tab-evaluation" tabindex="0" hidden>
+      <div class="panel-head">
+        <h2>Evaluation</h2>
+        <div class="btn-row">
+          <button type="button" id="eval-retrieval" class="btn btn--primary">Run retrieval eval</button>
+          <button type="button" id="eval-answer" class="btn btn--primary">Run answer eval</button>
+          <button type="button" id="eval-refresh" class="btn btn--secondary">Refresh</button>
+        </div>
+      </div>
+      <p id="eval-error" class="form-error" role="alert" hidden></p>
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="visually-hidden">Evaluation runs</caption>
+          <thead>
+            <tr>
+              <th scope="col">Created</th>
+              <th scope="col">Mode</th>
+              <th scope="col">Status</th>
+              <th scope="col">Metrics</th>
+              <th scope="col">Results</th>
+            </tr>
+          </thead>
+          <tbody id="eval-body"></tbody>
+        </table>
+      </div>
+
+      <section id="eval-detail" class="card" aria-labelledby="eval-detail-title" tabindex="-1" hidden>
+        <div class="panel-head">
+          <h3 id="eval-detail-title">Run results</h3>
+          <button type="button" id="eval-detail-close" class="btn btn--ghost">Close</button>
+        </div>
+        <div id="eval-detail-summary" class="run-summary"></div>
+        <div class="table-wrap">
+          <table class="table">
+            <caption class="visually-hidden">Per-case results, failures first</caption>
+            <thead>
+              <tr>
+                <th scope="col">Case</th>
+                <th scope="col">Category</th>
+                <th scope="col">Question</th>
+                <th scope="col">Passed</th>
+                <th scope="col">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="eval-detail-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <datalist id="doc-type-suggestions">
+    <option value="general"></option>
+    <option value="act_statute"></option>
+    <option value="syllabus"></option>
+    <option value="registration"></option>
+    <option value="counselling"></option>
+    <option value="institution_list"></option>
+    <option value="faq"></option>
+  </datalist>
+
+  <!-- Reusable confirmation dialog (delete, re-index). -->
+  <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <form method="dialog">
+      <h2 id="confirm-title">Please confirm</h2>
+      <p id="confirm-message"></p>
+      <div class="btn-row btn-row--end">
+        <button type="submit" value="cancel" class="btn btn--secondary">Cancel</button>
+        <button type="submit" value="confirm" id="confirm-ok" class="btn btn--danger">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
