@@ -1,3 +1,1 @@
-from nursing_bot.workers.tasks import app, ingest_document_task
-
-__all__ = ["app", "ingest_document_task"]
+"""Procrastinate background worker. The app lives in nursing_bot.workers.tasks:app."""

@@ -1,52 +1,87 @@
+"""Procrastinate worker: tasks are stored in PostgreSQL (no Redis/RabbitMQ needed).
+
+Run with:  procrastinate --app=nursing_bot.workers.tasks.app worker
+The schema is created by `python -m nursing_bot.cli migrate`.
+"""
+
 import logging
 import uuid
 
 import procrastinate
 
-from nursing_bot.api.dependencies import get_llm_client_dep, get_storage_dep
+from nursing_bot import jobs
 from nursing_bot.config import get_settings
-from nursing_bot.ingestion.pipeline import IngestionPipeline
-from nursing_bot.storage.database import get_session
-from nursing_bot.storage.models import Document
+from nursing_bot.ingestion.pipeline import DocumentNotFoundError
+from nursing_bot.observability import configure_logging, setup_tracing
 
+_settings = get_settings()
+configure_logging(_settings.LOG_LEVEL, _settings.LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
-settings = get_settings()
-pg_conninfo = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+
+def _conninfo(database_url: str) -> str:
+    """SQLAlchemy URL → libpq URL (drop the '+asyncpg' driver suffix)."""
+    scheme, sep, rest = database_url.partition("://")
+    return f"{scheme.split('+', 1)[0]}{sep}{rest}"
+
 
 app = procrastinate.App(
-    connector=procrastinate.PsycopgConnector(conninfo=pg_conninfo),
+    connector=procrastinate.PsycopgConnector(
+        conninfo=_conninfo(_settings.DATABASE_URL)
+    ),
     import_paths=["nursing_bot.workers.tasks"],
 )
 
 
-@app.task(queue="ingest")
-async def ingest_document_task(document_id: str) -> None:
-    """Procrastinate background worker task to ingest, chunk, embed, and index a document."""
-    doc_uuid = uuid.UUID(document_id)
-    storage = get_storage_dep()
-    llm_client = get_llm_client_dep()
+async def ensure_queue_schema() -> bool:
+    """Create the Procrastinate tables if missing. Returns True if it created them."""
+    from sqlalchemy import text
 
+    from nursing_bot.storage.database import get_session
+
+    async with get_session() as session:
+        exists = (
+            await session.execute(text("SELECT to_regclass('procrastinate_jobs')"))
+        ).scalar()
+    if exists:
+        return False
+    async with app.open_async():
+        await app.schema_manager.apply_schema_async()
+    return True
+
+
+@app.task(queue="ingest", retry=procrastinate.RetryStrategy(max_attempts=3, wait=30))
+async def ingest_document_task(document_id: str) -> None:
+    setup_tracing("nursing-bot-worker")
     try:
-        async with get_session() as session:
-            pipeline = IngestionPipeline(llm_client=llm_client, storage=storage)
-            await pipeline.ingest_document(session, doc_uuid)
-            logger.info("Successfully ingested document %s in worker.", document_id)
-    except Exception as exc:
-        logger.exception(
-            "Failed to ingest document %s in background worker.", document_id
-        )
-        try:
-            async with get_session() as session:
-                document = await session.get(Document, doc_uuid)
-                if document is not None:
-                    document.status = "failed"
-                    document.error_message = str(exc)
-                    await session.commit()
-        except Exception as commit_exc:  # noqa: BLE001
-            logger.error(
-                "Failed to persist failed state for document %s: %s",
-                document_id,
-                commit_exc,
-            )
-        raise
+        await jobs.run_ingestion(uuid.UUID(document_id))
+    except DocumentNotFoundError:
+        # Deleted after it was queued: nothing to do, and nothing to retry.
+        logger.info("Skipping ingestion of deleted document %s", document_id)
+
+
+@app.task(queue="eval")
+async def run_eval_task(run_id: str) -> None:
+    setup_tracing("nursing-bot-worker")
+    await jobs.run_eval(uuid.UUID(run_id))
+
+
+@app.periodic(cron="17 3 * * *")  # daily at 03:17
+@app.task(queue="maintenance")
+async def purge_chat_history_task(timestamp: int) -> None:
+    await jobs.purge_expired_chat_history()
+
+
+@app.periodic(cron="*/5 * * * *")
+@app.task(queue="maintenance", queueing_lock="retry_stalled_jobs")
+async def retry_stalled_jobs_task(timestamp: int) -> None:
+    """Re-queue jobs whose worker died mid-job (crash, redeploy, VM reboot).
+
+    Without this, such a job stays "doing" forever and its document stays
+    "processing". Workers send a heartbeat every few seconds; a job whose
+    worker has been silent for 2 minutes is considered abandoned.
+    """
+    stalled = list(await app.job_manager.get_stalled_jobs(seconds_since_heartbeat=120))
+    for job in stalled:
+        logger.warning("Re-queueing stalled job %s (%s)", job.id, job.task_name)
+        await app.job_manager.retry_job(job)
