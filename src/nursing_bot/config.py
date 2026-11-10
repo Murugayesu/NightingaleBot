@@ -16,7 +16,11 @@ from functools import lru_cache
 from typing import Literal
 
 from pydantic import SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 # The pgvector column is created with this fixed size (see storage/models.py).
 # Providers that return fewer dimensions are zero-padded, which leaves cosine
@@ -67,11 +71,31 @@ class Settings(BaseSettings):
     """Global configuration for nursing_bot."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # NURSING_BOT_ENV_FILE="" disables .env loading (the test suite does this).
+        env_file=os.environ.get("NURSING_BOT_ENV_FILE", ".env") or None,
         env_file_encoding="utf-8",
         extra="ignore",
         secrets_dir=_SECRETS_DIR if os.path.isdir(_SECRETS_DIR) else None,
+        # `KEY=` in .env (as in .env.example) means "not set", not "empty string".
+        env_ignore_empty=True,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Docker secrets win over environment variables and .env.
+
+        pydantic-settings' default order is the reverse, so a leftover
+        `ADMIN_API_KEY=admin:admin@123` in .env would silently beat the
+        mounted secret file.
+        """
+        return (init_settings, file_secret_settings, env_settings, dotenv_settings)
 
     # ------------------------------------------------------------------ core
     ENVIRONMENT: Literal["development", "production", "test"] = "development"

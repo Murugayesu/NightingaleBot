@@ -21,15 +21,28 @@
 
 ## Secrets with Docker secrets (instead of .env)
 
-Any setting can be a file in `/run/secrets/<SETTING_NAME>`. For example, in a compose override:
+Any setting can be a file in `/run/secrets/<SETTING_NAME>`. A secret file **wins over** the same
+setting in `.env` or the environment, and an empty `KEY=` line counts as "not set". Mount the
+secrets on every service that runs the app code (api, worker and migrate). In a compose override:
 
 ```yaml
+x-app-secrets: &app-secrets
+  secrets: [ADMIN_API_KEY, SESSION_SECRET, LLM_API_KEY, EMBEDDING_API_KEY]
+
 services:
-  api:
-    secrets: [ADMIN_API_KEY, SESSION_SECRET, LLM_API_KEY]
+  api: *app-secrets
+  worker: *app-secrets
+  migrate: *app-secrets
+
 secrets:
-  ADMIN_API_KEY: { file: ./secrets/admin_api_key.txt }
+  ADMIN_API_KEY: { file: ./secrets/ADMIN_API_KEY }
+  SESSION_SECRET: { file: ./secrets/SESSION_SECRET }
+  LLM_API_KEY: { file: ./secrets/LLM_API_KEY }
+  EMBEDDING_API_KEY: { file: ./secrets/EMBEDDING_API_KEY }
 ```
+
+Keep `./secrets/` out of git and readable only by the deploying user (`chmod 600`). The database
+and object-storage passwords are still read by Postgres, MinIO and Compose from `.env`.
 
 ## Backups
 

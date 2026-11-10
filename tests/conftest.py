@@ -1,7 +1,8 @@
 """Shared test setup.
 
-Environment variables are set BEFORE any nursing_bot import, so settings never
-come from a developer's .env (environment variables beat .env values).
+Environment variables are set BEFORE any nursing_bot import. A developer's .env
+is not read at all (NURSING_BOT_ENV_FILE=""), so tests never pick up real
+provider URLs or keys.
 """
 
 import os
@@ -13,6 +14,7 @@ TEST_DATABASE_URL = os.environ.get(
 
 os.environ.update(
     {
+        "NURSING_BOT_ENV_FILE": "",
         "ENVIRONMENT": "test",
         "LOG_LEVEL": "WARNING",
         "PHOENIX_ENABLED": "false",

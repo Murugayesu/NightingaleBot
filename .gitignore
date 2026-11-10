@@ -35,3 +35,6 @@ docs/superpowers/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Docker secret files (see docs/operations.md)
+secrets/

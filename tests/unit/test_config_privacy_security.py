@@ -197,3 +197,32 @@ def test_mobile_number_formats_are_redacted(phone):
 )
 def test_money_and_council_numbers_are_not_redacted(text):
     assert privacy.redact(text) == text
+
+
+def test_docker_secrets_beat_env_and_empty_env_is_ignored(tmp_path, monkeypatch):
+    """Regression (final review M2): env vars, even empty ones, overrode /run/secrets."""
+    (tmp_path / "ADMIN_API_KEY").write_text("from-secret-file-0123456789")
+    (tmp_path / "LLM_API_KEY").write_text("sk-from-secret")
+    monkeypatch.setenv("ADMIN_API_KEY", "admin:admin@123")  # leftover default in .env
+    monkeypatch.setenv("LLM_API_KEY", "")  # `LLM_API_KEY=` from the template
+    s = Settings(_secrets_dir=tmp_path)  # type: ignore[call-arg]
+    assert s.ADMIN_API_KEY.get_secret_value() == "from-secret-file-0123456789"
+    assert (
+        s.LLM_API_KEY is not None
+        and s.LLM_API_KEY.get_secret_value() == "sk-from-secret"
+    )
+
+
+def test_env_example_has_no_empty_values_with_inline_comments():
+    """Regression (final review H2): Docker Compose reads `KEY=   # note` as the
+    value '# note', which broke LLM_BASE_URL and BACKUP_TARGET_URL."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    bad = [
+        line
+        for line in (root / ".env.example").read_text(encoding="utf-8").splitlines()
+        if re.match(r"^[A-Z_]+=\s+#", line)
+    ]
+    assert bad == []
