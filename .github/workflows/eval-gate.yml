@@ -1,0 +1,32 @@
+name: Eval gate
+
+# The evaluation needs the real document corpus and LLM API keys, which live on
+# the deployment VM, not in GitHub. This workflow therefore runs on a
+# self-hosted runner installed on that VM (label: nursingbot-vm).
+# Run it manually before deploying a retrieval/prompt change, and weekly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_hit_rate:
+        description: "Fail if retrieval hit rate is below"
+        default: "0.80"
+      min_pass_rate:
+        description: "Fail if answer pass rate is below"
+        default: "0.70"
+  schedule:
+    - cron: "0 4 * * 1"  # Mondays 04:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: [self-hosted, nursingbot-vm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Run the eval gate against the deployed stack
+        env:
+          MIN_HIT_RATE: ${{ inputs.min_hit_rate || '0.80' }}
+          MIN_PASS_RATE: ${{ inputs.min_pass_rate || '0.70' }}
+        run: sh scripts/eval-gate.sh

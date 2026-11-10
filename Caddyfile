@@ -1,30 +1,51 @@
 {
-    auto_https off
-    admin off
+	# Caddy's admin API can rewrite live config; nothing here needs it.
+	admin off
+
+	# Let's Encrypt account e-mail (only used when SITE_ADDRESS is a real domain).
+	email {$ACME_EMAIL:admin@localhost}
+
+	# Proxies in FRONT of Caddy whose X-Forwarded-For may be believed, e.g. a
+	# cloud load balancer's subnet or Cloudflare's ranges. Default: none, so
+	# Caddy is the edge and the socket address is the client. Without this
+	# behind a load balancer, every user would share one rate-limit bucket.
+	servers {
+		trusted_proxies static {$CADDY_TRUSTED_PROXIES:127.0.0.1/32}
+	}
 }
 
-:80 {
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        Permissions-Policy "geolocation=(), camera=(), microphone=()"
-        -Server
-    }
+# SITE_ADDRESS decides whether TLS is on:
+#   ":80"                  plain HTTP (local dev, or behind an external TLS terminator)
+#   "nursing.example.org"  Caddy obtains and renews a certificate automatically
+{$SITE_ADDRESS::80} {
+	# Content-Security-Policy and X-Frame-Options are set by the application,
+	# per path: the chat widget page must be frameable by the council's site,
+	# the admin panel and API must not be. Caddy must not overwrite them.
+	header {
+		-Server
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+	}
 
-    reverse_proxy api:8000 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
+	# HSTS only over HTTPS (browsers must ignore it on plain HTTP; RFC 6797 §8.1).
+	# No 'preload': submitting to the preload list is effectively irreversible.
+	@secure protocol https
+	header @secure Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
-        flush_interval -1
-    }
+	reverse_proxy api:8000 {
+		# Overwrite, never append. {client_ip} is the real client: the socket
+		# address, or the forwarded address when the request came through a
+		# trusted proxy above. The app believes this header only because it
+		# arrives from a private network (TRUSTED_PROXY_NETWORKS), i.e. Caddy.
+		header_up X-Forwarded-For {client_ip}
+		header_up X-Forwarded-Proto {scheme}
 
-    log {
-        output stdout
-        format console
-        level INFO
-    }
+		# Deliver SSE tokens immediately instead of buffering the whole answer.
+		flush_interval -1
+	}
+
+	log {
+		output stdout
+		format console
+		level INFO
+	}
 }
