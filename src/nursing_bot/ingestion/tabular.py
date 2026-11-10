@@ -34,6 +34,13 @@ class TabularCardGenerator:
             ) from exc
 
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        try:
+            return cls._workbook_cards(workbook, default_doc_type)
+        finally:
+            workbook.close()
+
+    @classmethod
+    def _workbook_cards(cls, workbook: Any, default_doc_type: str) -> list[Document]:
         docs: list[Document] = []
         for worksheet in workbook.worksheets:
             rows = worksheet.iter_rows(values_only=True)
@@ -55,7 +62,6 @@ class TabularCardGenerator:
             for doc in sheet_docs:
                 doc.metadata["sheet"] = worksheet.title
             docs.extend(sheet_docs)
-        workbook.close()
         return docs
 
     @classmethod

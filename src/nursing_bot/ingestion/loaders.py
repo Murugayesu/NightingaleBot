@@ -1,173 +1,104 @@
-import csv
+"""Parse prose documents (PDF, DOCX, TXT, Markdown) into LangChain Documents.
+
+Tabular files (CSV, TSV, XLSX, JSON) are handled by tabular.py instead, because
+each row should become its own searchable "card" rather than one blob of text.
+
+All parsers here are synchronous and CPU-bound; the ingestion pipeline runs
+them in a worker thread so they never block the event loop.
+"""
+
 import io
-import os
-import tempfile
 from pathlib import Path
 
 from langchain_core.documents import Document
 
+PROSE_SUFFIXES = frozenset({".pdf", ".docx", ".txt", ".text", ".md", ".markdown"})
+TABULAR_SUFFIXES = frozenset({".csv", ".tsv", ".xlsx", ".json"})
+SUPPORTED_SUFFIXES = PROSE_SUFFIXES | TABULAR_SUFFIXES
+_LEGACY_FORMATS = {".doc": ".docx", ".xls": ".xlsx"}
 
-class DocumentLoaderFactory:
-    """Native Document Loader Factory replacing archived langchain-community.
 
-    Directly parses TXT, Markdown, CSV, TSV, PDF, DOCX, and XLSX files
-    into standardized LangChain Document objects without deprecation warnings.
-    """
+def file_suffix(filename: str) -> str:
+    return Path(filename).suffix.casefold()
 
-    @classmethod
-    def load_bytes(cls, content: bytes, filename: str) -> list[Document]:
-        suffix = Path(filename).suffix.casefold()
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-            tmp_file.write(content)
-            tmp_file.flush()
 
-        try:
-            return cls.load_file(tmp_path, filename_override=filename)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+def unsupported_reason(filename: str) -> str | None:
+    """None if the file type is supported, otherwise a human-readable reason."""
+    suffix = file_suffix(filename)
+    if suffix in SUPPORTED_SUFFIXES:
+        return None
+    if suffix in _LEGACY_FORMATS:
+        return f"Legacy {suffix} files are not supported; please convert to {_LEGACY_FORMATS[suffix]}."
+    supported = ", ".join(sorted(SUPPORTED_SUFFIXES))
+    return f"Unsupported file type '{suffix or '(none)'}'. Supported: {supported}."
 
-    @classmethod
-    def load_file(
-        cls, file_path: str, filename_override: str | None = None
-    ) -> list[Document]:
-        path = Path(file_path)
-        display_name = filename_override or path.name
-        suffix = path.suffix.casefold()
 
-        if suffix in {".txt", ".text", ".md", ".markdown"}:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            return [Document(page_content=text, metadata={"source": display_name})]
+def _load_pdf(data: bytes, name: str) -> list[Document]:
+    from pypdf import PdfReader
 
-        if suffix in {".csv", ".tsv"}:
-            delimiter = "\t" if suffix == ".tsv" else ","
-            content = path.read_text(encoding="utf-8-sig", errors="replace")
-            reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
-            docs: list[Document] = []
-            for i, row in enumerate(reader):
-                row_lines = [
-                    f"{k}: {v}"
-                    for k, v in row.items()
-                    if v is not None and str(v).strip()
-                ]
-                page_content = "\n".join(row_lines)
-                if page_content.strip():
-                    docs.append(
-                        Document(
-                            page_content=page_content,
-                            metadata={"source": display_name, "row": i},
-                        )
-                    )
-            return docs
-
-        if suffix == ".pdf":
-            try:
-                from pypdf import PdfReader
-
-                reader = PdfReader(str(path))
-                pdf_docs: list[Document] = []
-                for page_num, page in enumerate(reader.pages):
-                    text = page.extract_text() or ""
-                    if text.strip():
-                        pdf_docs.append(
-                            Document(
-                                page_content=text,
-                                metadata={"source": display_name, "page": page_num},
-                            )
-                        )
-                return pdf_docs
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to parse PDF document {display_name}: {e}"
-                ) from e
-
-        if suffix == ".doc":
-            raise ValueError(
-                f"Legacy Word binary format (.doc) is not supported for {display_name}. "
-                "Please convert to modern .docx format."
+    pages = []
+    for number, page in enumerate(PdfReader(io.BytesIO(data)).pages, start=1):
+        text = page.extract_text() or ""
+        if text.strip():
+            pages.append(
+                Document(page_content=text, metadata={"source": name, "page": number})
             )
+    return pages
 
-        if suffix == ".docx":
-            try:
-                import docx
-                from docx.table import Table
-                from docx.text.paragraph import Paragraph
 
-                doc = docx.Document(str(path))
-                parts: list[str] = []
-                for child in doc.element.body:
-                    if child.tag.endswith("p"):
-                        p = Paragraph(child, doc)
-                        if p.text.strip():
-                            parts.append(p.text.strip())
-                    elif child.tag.endswith("tbl"):
-                        table = Table(child, doc)
-                        table_rows: list[str] = []
-                        for row in table.rows:
-                            row_cells = [cell.text.strip() for cell in row.cells]
-                            if any(row_cells):
-                                table_rows.append(" | ".join(row_cells))
-                        if table_rows:
-                            parts.append("\n".join(table_rows))
+def _load_docx(data: bytes, name: str) -> list[Document]:
+    import docx
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
-                if not parts:
-                    for p in doc.paragraphs:
-                        if p.text.strip():
-                            parts.append(p.text.strip())
-                    for table in doc.tables:
-                        table_rows = [
-                            " | ".join(cell.text.strip() for cell in row.cells)
-                            for row in table.rows
-                        ]
-                        if any(table_rows):
-                            parts.append("\n".join(table_rows))
+    document = docx.Document(io.BytesIO(data))
+    parts: list[str] = []
+    # Walk the body in order so tables stay next to the paragraphs that introduce them.
+    for child in document.element.body.iterchildren():
+        local_name = child.tag.rsplit("}", 1)[-1]
+        if local_name == "p":
+            text = Paragraph(child, document).text.strip()
+            if text:
+                parts.append(text)
+        elif local_name == "tbl":
+            rows = []
+            for row in Table(child, document).rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                if any(cells):
+                    rows.append(" | ".join(cells))
+            if rows:
+                parts.append("\n".join(rows))
+    return (
+        [Document(page_content="\n\n".join(parts), metadata={"source": name})]
+        if parts
+        else []
+    )
 
-                return [
-                    Document(
-                        page_content="\n\n".join(parts),
-                        metadata={"source": display_name},
-                    )
-                ]
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to parse DOCX document {display_name}: {e}"
-                ) from e
 
-        if suffix == ".xls":
-            raise ValueError(
-                f"Legacy Excel binary format (.xls) is not supported for {display_name}. "
-                "Please convert to modern .xlsx format."
-            )
+def _load_text(data: bytes, name: str) -> list[Document]:
+    text = data.decode("utf-8-sig", errors="replace")
+    return (
+        [Document(page_content=text, metadata={"source": name})] if text.strip() else []
+    )
 
-        if suffix == ".xlsx":
-            try:
-                import openpyxl
 
-                wb = openpyxl.load_workbook(str(path), data_only=True)
-                excel_docs: list[Document] = []
-                for sheet in wb.sheetnames:
-                    ws = wb[sheet]
-                    lines = []
-                    for row in ws.iter_rows(values_only=True):
-                        if any(cell is not None for cell in row):
-                            lines.append(
-                                " | ".join(
-                                    str(cell) if cell is not None else ""
-                                    for cell in row
-                                )
-                            )
-                    if lines:
-                        excel_docs.append(
-                            Document(
-                                page_content="\n".join(lines),
-                                metadata={"source": display_name, "sheet": sheet},
-                            )
-                        )
-                return excel_docs
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to parse Excel document {display_name}: {e}"
-                ) from e
-
-        raise ValueError(f"Unsupported document format '{suffix}' for {display_name}")
+def load_prose(data: bytes, filename: str) -> list[Document]:
+    """Parse a prose file. Raises ValueError with a readable message on failure."""
+    suffix = file_suffix(filename)
+    loaders = {
+        ".pdf": _load_pdf,
+        ".docx": _load_docx,
+        ".txt": _load_text,
+        ".text": _load_text,
+        ".md": _load_text,
+        ".markdown": _load_text,
+    }
+    loader = loaders.get(suffix)
+    if loader is None:
+        raise ValueError(
+            unsupported_reason(filename) or f"'{suffix}' is not a prose format."
+        )
+    try:
+        return loader(data, filename)
+    except Exception as exc:
+        raise ValueError(f"Failed to parse {filename}: {exc}") from exc

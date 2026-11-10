@@ -1,39 +1,99 @@
+"""Context headers: give every chunk the context it lost when it was cut out.
+
+A chunk like "The fee is Rs. 365." is ambiguous on its own. We prepend:
+
+  1. a template header (always):  [Document: FAQ.pdf] [Section: Fees] [Page: 2]
+  2. an LLM-written sentence (optional, CONTEXTUAL_HEADERS_ENABLED):
+     "This chunk is from the TNNMC online registration FAQ and states the
+      registration fee." (Anthropic's "contextual retrieval" technique)
+
+The prefixed text is what gets embedded and keyword-indexed, so searches match
+on document title and topic, not only on the chunk's own words.
+"""
+
+import asyncio
+import logging
+
 from langchain_core.documents import Document
 
+from nursing_bot.models.litellm_client import LiteLLMClient
 
-def add_context_headers(
-    doc: Document,
-    document_title: str | None = None,
-) -> Document:
-    """Prepend context header tags (Document, Section, Page/Sheet) to document page_content."""
-    tags: list[str] = []
+logger = logging.getLogger(__name__)
 
-    title = document_title or doc.metadata.get("source") or doc.metadata.get("title")
-    if title:
-        tags.append(f"[Document: {title}]")
+_DOCUMENT_EXCERPT_CHARS = 12_000
 
-    sections: list[str] = []
-    for level in range(1, 5):
-        key = f"header_{level}"
-        val = doc.metadata.get(key)
-        if val and isinstance(val, str) and val.strip():
-            sections.append(val.strip())
+_CONTEXT_PROMPT = """<document title="{title}">
+{document}
+</document>
 
+Here is a chunk from that document:
+<chunk>
+{chunk}
+</chunk>
+
+Write one or two short sentences that situate this chunk within the document
+(what it is about and which part it belongs to) to improve search retrieval.
+Use the document's own terms. Reply with the sentences only."""
+
+
+def template_header(doc: Document, document_title: str) -> str:
+    tags = [f"[Document: {document_title}]"]
+    sections = [
+        str(doc.metadata[f"header_{level}"]).strip()
+        for level in range(1, 5)
+        if str(doc.metadata.get(f"header_{level}") or "").strip()
+    ]
     if sections:
         tags.append(f"[Section: {' > '.join(sections)}]")
-
-    if "page" in doc.metadata and doc.metadata["page"] is not None:
+    if doc.metadata.get("page") is not None:
         tags.append(f"[Page: {doc.metadata['page']}]")
     elif doc.metadata.get("sheet"):
         tags.append(f"[Sheet: {doc.metadata['sheet']}]")
+    return " ".join(tags)
 
-    if not tags:
-        return doc
 
-    header_prefix = " ".join(tags)
-    new_content = f"{header_prefix}\n\n{doc.page_content}"
+def add_context_headers(
+    doc: Document, document_title: str, llm_context: str | None = None
+) -> Document:
+    header = template_header(doc, document_title)
+    prefix = f"{header}\n{llm_context.strip()}" if llm_context else header
+    metadata = {**doc.metadata, "context_header": prefix}
+    return Document(page_content=f"{prefix}\n\n{doc.page_content}", metadata=metadata)
 
-    new_metadata = dict(doc.metadata)
-    new_metadata["context_header"] = header_prefix
 
-    return Document(page_content=new_content, metadata=new_metadata)
+class LLMContextualizer:
+    """Generate the optional LLM context sentence for many chunks concurrently."""
+
+    def __init__(
+        self, llm_client: LiteLLMClient, model: str | None = None, concurrency: int = 4
+    ):
+        self.llm_client = llm_client
+        self.model = model
+        self.semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(self, title: str, document_text: str, chunk: Document) -> str | None:
+        prompt = _CONTEXT_PROMPT.format(
+            title=title,
+            document=document_text[:_DOCUMENT_EXCERPT_CHARS],
+            chunk=chunk.page_content,
+        )
+        async with self.semaphore:
+            try:
+                extra = {"model": self.model} if self.model else {}
+                text = await self.llm_client.acomplete(
+                    prompt, temperature=0.0, max_tokens=120, **extra
+                )
+            # A missing sentence is fine: the template header remains.
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Context sentence failed for a chunk of %s: %s", title, exc
+                )
+                return None
+        return text.strip() or None
+
+    async def contextualize(
+        self, title: str, document_text: str, chunks: list[Document]
+    ) -> list[str | None]:
+        return list(
+            await asyncio.gather(*(self._one(title, document_text, c) for c in chunks))
+        )
