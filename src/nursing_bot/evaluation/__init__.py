@@ -1,10 +1,16 @@
-from nursing_bot.evaluation.golden_set import GOLDEN_BENCHMARK_CASES, GoldenTestCase
-from nursing_bot.evaluation.runner import EvalReport, EvaluationRunner, TestCaseResult
+"""Evaluation against eval/evalset.csv. Heavy modules are imported on use."""
+
+from nursing_bot.evaluation.dataset import EvalCase, load_cases
+from nursing_bot.evaluation.metrics import (
+    fact_recall,
+    first_hit_rank,
+    suggest_threshold,
+)
 
 __all__ = [
-    "GOLDEN_BENCHMARK_CASES",
-    "EvalReport",
-    "EvaluationRunner",
-    "GoldenTestCase",
-    "TestCaseResult",
+    "EvalCase",
+    "fact_recall",
+    "first_hit_rank",
+    "load_cases",
+    "suggest_threshold",
 ]
