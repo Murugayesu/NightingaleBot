@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from nursing_bot import __version__
-from nursing_bot.api.security import limiter
+from nursing_bot.api.security import admin_key_valid, limiter
 from nursing_bot.api.v1 import v1_router
 from nursing_bot.config import get_settings
 from nursing_bot.observability import (
@@ -73,6 +73,47 @@ def _content_security_policy(path: str) -> str | None:
             None  # Swagger UI loads its own assets; it is disabled in production anyway
         )
     return "default-src 'none'; frame-ancestors 'none'"
+
+
+UPLOAD_PATH = "/api/v1/documents/upload"
+MAX_JSON_BODY_BYTES = 1024 * 1024  # chat and admin requests are a few KB
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024  # form fields and boundaries around the file
+
+
+def _reject(status_code: int, detail: str) -> Response:
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+async def request_guard(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Reject bad requests BEFORE anything reads their body.
+
+    FastAPI parses a multipart body (spooling files to disk) before it runs
+    the endpoint's auth dependency. Without this guard an anonymous client
+    could stream endless gigabytes to the upload URL and fill the disk
+    before ever receiving its 401.
+    """
+    if request.method in ("POST", "PUT", "PATCH"):
+        is_upload = request.url.path == UPLOAD_PATH
+        if "chunked" in request.headers.get("transfer-encoding", "").lower():
+            return _reject(411, "Requests must declare Content-Length.")
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                size = int(declared)
+            except ValueError:
+                return _reject(400, "Invalid Content-Length header.")
+            limit = (
+                get_settings().MAX_UPLOAD_SIZE_BYTES + MULTIPART_OVERHEAD_BYTES
+                if is_upload
+                else MAX_JSON_BODY_BYTES
+            )
+            if size > limit:
+                return _reject(413, f"Request body exceeds the {limit}-byte limit.")
+        if is_upload and not admin_key_valid(request.headers.get("x-admin-api-key")):
+            return _reject(401, "Invalid or missing X-Admin-API-Key header.")
+    return await call_next(request)
 
 
 async def security_headers(
@@ -138,6 +179,9 @@ def create_app() -> FastAPI:
     # derive from openai.APIError.
     app.add_exception_handler(openai.APIError, provider_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)
+    # Registered first = runs inside security_headers, so its rejections
+    # also carry the security headers.
+    app.middleware("http")(request_guard)
     app.middleware("http")(security_headers)
 
     if settings.cors_origins:

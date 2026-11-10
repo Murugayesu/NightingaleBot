@@ -31,6 +31,18 @@
 	@secure protocol https
 	header @secure Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
+	# Cap request bodies at the edge (the app enforces the same limits before
+	# reading a body). Uploads: MAX_UPLOAD_SIZE_BYTES (50 MiB) plus form overhead;
+	# everything else is small JSON.
+	@upload path /api/v1/documents/upload
+	request_body @upload {
+		max_size {$CADDY_MAX_UPLOAD_SIZE:55MB}
+	}
+	@not_upload not path /api/v1/documents/upload
+	request_body @not_upload {
+		max_size 1MB
+	}
+
 	reverse_proxy api:8000 {
 		# Overwrite, never append. {client_ip} is the real client: the socket
 		# address, or the forwarded address when the request came through a

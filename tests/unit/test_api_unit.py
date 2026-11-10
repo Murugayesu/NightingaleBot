@@ -172,3 +172,55 @@ async def test_unexpected_error_returns_json_500(settings_override):
     assert response.status_code == 500 and response.json() == {
         "detail": "Internal server error."
     }
+
+
+async def test_upload_without_admin_key_is_rejected_before_the_body_is_read(client):
+    """Regression (final review H1): FastAPI parsed (and spooled to disk) the
+    whole multipart body before the auth dependency ran."""
+    response = await client.post(
+        "/api/v1/documents/upload", files={"file": ("a.txt", b"x" * 1000, "text/plain")}
+    )
+    assert response.status_code == 401
+    assert response.headers["x-content-type-options"] == "nosniff"  # still has headers
+
+
+async def test_oversized_upload_is_rejected_from_content_length(
+    client, settings_override
+):
+    settings_override(MAX_UPLOAD_SIZE_BYTES="1000")
+    big = b"x" * (2 * 1024 * 1024)  # over 1000 bytes + 1 MiB multipart allowance
+    response = await client.post(
+        "/api/v1/documents/upload",
+        headers=ADMIN,
+        files={"file": ("a.txt", big, "text/plain")},
+    )
+    assert response.status_code == 413
+
+
+async def test_oversized_json_body_is_rejected(client):
+    response = await client.post(
+        "/api/v1/chat",
+        content=b'{"query": "' + b"x" * (1024 * 1024 + 10) + b'"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+
+
+async def test_chunked_request_without_length_is_rejected(client):
+    async def body():
+        yield b'{"query": "fee?"}'
+
+    response = await client.post(
+        "/api/v1/chat", content=body(), headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 411
+
+
+async def test_non_ascii_session_token_gives_401_not_500(client):
+    """Regression (final review L1): compare_digest raised TypeError on non-ASCII."""
+    response = await client.post(
+        "/api/v1/chat",
+        json={"query": "fee?"},
+        headers={"X-Session-Token": "a.9999999999.éé".encode("latin-1")},
+    )
+    assert response.status_code == 401

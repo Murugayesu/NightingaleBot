@@ -69,15 +69,18 @@ limiter = Limiter(key_func=get_client_ip)
 
 
 # ------------------------------------------------------------------ admin key
+def admin_key_valid(presented: str | None) -> bool:
+    """Constant-time check of a presented admin key against the configured one."""
+    configured = get_settings().ADMIN_API_KEY.get_secret_value()
+    if not configured or not presented:
+        return False
+    return secrets.compare_digest(presented.encode(), configured.encode())
+
+
 async def verify_admin_key(
     x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key"),
 ) -> None:
-    configured = get_settings().ADMIN_API_KEY.get_secret_value()
-    if (
-        not configured
-        or not x_admin_api_key
-        or not secrets.compare_digest(x_admin_api_key.encode(), configured.encode())
-    ):
+    if not admin_key_valid(x_admin_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-Admin-API-Key header.",
@@ -108,7 +111,7 @@ def verify_session_token(token: str, now: float | None = None) -> str | None:
     except ValueError:
         return None
     expected = _signature(f"{session_id}.{expires_at}")
-    if not hmac.compare_digest(signature, expected):
+    if not hmac.compare_digest(signature.encode(), expected.encode()):
         return None
     if expires_at < (now if now is not None else time.time()):
         return None
