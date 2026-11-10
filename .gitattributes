@@ -1,0 +1,8 @@
+# Files executed or parsed inside Linux containers must keep LF line endings,
+# even on Windows checkouts (a CR makes `sh` fail with "\r: not found").
+*.sh        text eol=lf
+Caddyfile   text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile  text eol=lf
+*.py        text eol=lf

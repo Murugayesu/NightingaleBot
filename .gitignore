@@ -17,12 +17,18 @@ dist/
 # Testing & Quality
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
+backups/
 
-# Documentation (Excluded per user instructions)
-*.md
-docs/
+# Large binary source data and regenerable extraction output
+corpus/
+.scratch/
+
+# Local AI working notes and reports (kept on disk, not in the repository)
+.artifacts/
+docs/superpowers/
 
 # IDE & OS
 .vscode/
