@@ -67,6 +67,9 @@ async def get_chat_session(
 
     session_id = verify_session_token(x_session_token)
     chat_session = await db.get(ChatSession, session_id) if session_id else None
+    # End the read transaction now: the request continues with slow LLM and
+    # embedding calls, and must not hold a pooled connection while waiting.
+    await db.commit()
     if chat_session is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "Invalid or expired session token."

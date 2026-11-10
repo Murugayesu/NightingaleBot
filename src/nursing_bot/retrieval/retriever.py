@@ -88,10 +88,12 @@ class PostgresHybridRetriever(BaseRetriever):
             span.set_attribute("retrieval.query", query)
             span.set_attribute("retrieval.top_k", k)
 
-            await enable_hnsw_iterative_scan(session)
+            # Embed first: the provider call is slow, and it must not run while
+            # a database transaction (and its pooled connection) is held open.
             (query_vector,) = await self.llm_client.aembed_texts(
                 [query], patient=self.patient_embeddings
             )
+            await enable_hnsw_iterative_scan(session)  # opens the transaction
             dense = await run_dense_search(
                 session,
                 query_vector,

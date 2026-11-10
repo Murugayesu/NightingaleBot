@@ -165,8 +165,10 @@ async def chat_endpoint(
         validate_filters(filters)
     except InvalidFilterError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-    max_messages = settings.MAX_RECENT_CONTEXT_TURNS * 2
-    history = [t.model_dump() for t in (req.recent_context or [])][-max_messages:]
+    max_messages = max(0, settings.MAX_RECENT_CONTEXT_TURNS) * 2
+    # Note `list[-0:]` is the WHOLE list, so 0 (context off) needs its own branch.
+    turns = [t.model_dump() for t in (req.recent_context or [])]
+    history = turns[-max_messages:] if max_messages else []
     session_id = chat_session.id if chat_session else None
     meter = UsageMeter()
 

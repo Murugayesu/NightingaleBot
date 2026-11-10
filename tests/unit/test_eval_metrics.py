@@ -73,3 +73,10 @@ def test_fact_matching_is_whole_word():
     assert fact_recall(["NM"], "Contact TNNMC.") == 0.0
     assert fact_recall(["no"], "It is not required.") == 0.0
     assert fact_recall(["NM", "no"], "NM course: no, it is not.") == 1.0
+
+
+async def test_judge_tolerates_null_fields():
+    """Regression (final review M4): {"questions": null} raised TypeError."""
+    judge = LLMJudge(FakeLLMClient('{"claims": null, "questions": null}'))
+    scores = await judge.score("q", "a", "s")
+    assert scores.faithfulness is None and scores.answer_relevancy is None

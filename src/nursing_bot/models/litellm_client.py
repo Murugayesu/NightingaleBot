@@ -129,8 +129,13 @@ class LiteLLMClient:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+        override = extra.pop("model", None)
         kwargs: dict[str, Any] = {
-            "model": extra.pop("model", None) or self.model,
+            # A per-call model (e.g. CONTEXTUAL_HEADERS_MODEL) gets the same
+            # provider prefix rule as the main model.
+            "model": _with_provider_prefix(override, self.base_url)
+            if override
+            else self.model,
             "messages": messages,
             "temperature": temperature,
             "timeout": self.timeout,

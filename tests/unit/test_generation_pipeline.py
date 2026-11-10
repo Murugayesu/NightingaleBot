@@ -183,3 +183,12 @@ async def test_db_connection_released_before_generation():
     pipeline, _ = _pipeline(llm)
     await pipeline.aquery(session=session, query="fee?")  # type: ignore[arg-type]
     assert session.commits == 1
+
+
+async def test_zero_context_turns_disables_condensing():
+    """Regression (final review L2): turns=0 still condensed using history."""
+    llm = FakeLLMClient('{"needs_context": true, "query": "rewritten"}')
+    question, tokens = await HistoryCondenser(llm, max_turns=0).condense(
+        "how do I pay it?", [{"role": "user", "content": "fee?"}]
+    )
+    assert (question, tokens) == ("how do I pay it?", 0) and llm.prompts == []

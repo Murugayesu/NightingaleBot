@@ -224,15 +224,22 @@ async def evaluate_answers(
                 else f"facts {recall:.0%}, cites expected source: {'yes' if cites_source else 'no'}"
             )
             if judge is not None and not abstained:
-                scores = await judge.score(
-                    case.question, response.answer, response.context_text
-                )
-                row["faithfulness"] = scores.faithfulness
-                row["answer_relevancy"] = scores.answer_relevancy
-                if scores.faithfulness is not None:
-                    faithfulness.append(scores.faithfulness)
-                if scores.answer_relevancy is not None:
-                    relevancy.append(scores.answer_relevancy)
+                try:
+                    scores = await judge.score(
+                        case.question, response.answer, response.context_text
+                    )
+                except Exception as exc:  # noqa: BLE001 - judge trouble must not abort the run
+                    logger.warning(
+                        "Judge failed on %s: %s: %s", case.id, type(exc).__name__, exc
+                    )
+                    row["judge_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+                else:
+                    row["faithfulness"] = scores.faithfulness
+                    row["answer_relevancy"] = scores.answer_relevancy
+                    if scores.faithfulness is not None:
+                        faithfulness.append(scores.faithfulness)
+                    if scores.answer_relevancy is not None:
+                        relevancy.append(scores.answer_relevancy)
         else:
             row["passed"] = abstained
             row["detail"] = (

@@ -51,6 +51,12 @@ def _json(raw: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _list_field(data: dict, key: str) -> list:
+    """A JSON field that should be a list; anything else (null, a string ...) is empty."""
+    value = data.get(key)
+    return value if isinstance(value, list) else []
+
+
 def _cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
@@ -65,7 +71,7 @@ class LLMJudge:
         raw = await self.llm.acomplete(
             _FAITHFULNESS_PROMPT.format(sources=sources, answer=answer), temperature=0.0
         )
-        claims = [c for c in _json(raw).get("claims", []) if isinstance(c, dict)]
+        claims = [c for c in _list_field(_json(raw), "claims") if isinstance(c, dict)]
         if not claims:
             return None
         return sum(bool(c.get("supported")) for c in claims) / len(claims)
@@ -76,12 +82,13 @@ class LLMJudge:
         )
         generated = [
             q
-            for q in _json(raw).get("questions", [])
+            for q in _list_field(_json(raw), "questions")
             if isinstance(q, str) and q.strip()
         ]
         if not generated:
             return None
-        vectors = await self.llm.aembed_texts([question, *generated])
+        # Evaluation is batch work: wait out embedding rate limits.
+        vectors = await self.llm.aembed_texts([question, *generated], patient=True)
         return sum(_cosine(vectors[0], v) for v in vectors[1:]) / len(generated)
 
     async def score(self, question: str, answer: str, sources: str) -> JudgeScores:

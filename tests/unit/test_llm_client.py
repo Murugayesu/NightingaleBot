@@ -157,3 +157,18 @@ async def test_interactive_embedding_fails_fast_on_rate_limit(monkeypatch):
     monkeypatch.setattr(module.litellm, "aembedding", limited)
     with pytest.raises(litellm.RateLimitError):
         await _client().aembed_texts(["a"])
+
+
+async def test_per_call_model_gets_provider_prefix(monkeypatch):
+    """Regression (final review L3): CONTEXTUAL_HEADERS_MODEL skipped the prefix."""
+    fake = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))], usage=None
+        )
+    )
+    monkeypatch.setattr(module.litellm, "acompletion", fake)
+    client = _client(model="auto", base_url="http://gateway/v1")
+    await client.acomplete("q", model="gemini-3.5-flash")
+    assert fake.call_args.kwargs["model"] == "openai/gemini-3.5-flash"
+    await client.acomplete("q", model="anthropic/claude-x")
+    assert fake.call_args.kwargs["model"] == "anthropic/claude-x"

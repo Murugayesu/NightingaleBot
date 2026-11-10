@@ -595,3 +595,72 @@ async def test_deleting_a_document_stops_its_ingestion_early(client, fake_llm, s
         with pytest.raises(DocumentNotFoundError):
             await pipeline.ingest_document(db, uuid.UUID(doc["id"]))
     assert calls["n"] == 1, "no further batches were embedded after the delete"
+
+
+async def test_no_db_connection_is_held_during_provider_calls(client, fake_llm):
+    """Regression (final review M1): the session lookup's transaction stayed open
+    through the condense LLM call and the query embedding, so ~30 concurrent
+    chats could exhaust the connection pool."""
+    from nursing_bot.storage.database import get_engine
+
+    await _load_corpus(client)
+    headers = {"X-Session-Token": (await _new_session(client))["session_token"]}
+    held: list[tuple[str, int]] = []
+    real_embed, real_complete = fake_llm.aembed_texts, fake_llm.acomplete_with_usage
+
+    async def embed(texts, **kwargs):
+        held.append(("embed", get_engine().pool.checkedout()))
+        return await real_embed(texts, **kwargs)
+
+    async def complete(prompt, system_prompt=None, temperature=0.0, **kwargs):
+        held.append(("llm", get_engine().pool.checkedout()))
+        return await real_complete(prompt, system_prompt, temperature, **kwargs)
+
+    fake_llm.aembed_texts = embed  # type: ignore[method-assign]
+    fake_llm.acomplete_with_usage = complete  # type: ignore[method-assign]
+    history = [
+        {"role": "user", "content": "What is the online registration fee?"},
+        {"role": "assistant", "content": "Rs. 365 [Source 1]"},
+    ]
+    response = await client.post(
+        "/api/v1/chat",
+        headers=headers,
+        json={
+            "query": "and how do I pay the online registration fee?",
+            "recent_context": history,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert [kind for kind, _ in held] == [
+        "llm",
+        "embed",
+        "llm",
+    ]  # condense, embed, answer
+    assert all(count == 0 for _, count in held), held
+
+
+async def test_judge_failure_does_not_abort_answer_eval(client, monkeypatch):
+    """Regression (final review M4): one judge error discarded the whole run."""
+    from nursing_bot.evaluation import judge as judge_module
+    from nursing_bot.evaluation import runner
+    from nursing_bot.evaluation.dataset import EvalCase
+
+    await _load_corpus(client)
+
+    async def broken_score(self, *args, **kwargs):
+        raise RuntimeError("judge provider down")
+
+    monkeypatch.setattr(judge_module.LLMJudge, "score", broken_score)
+    cases = [
+        EvalCase(
+            "t-1",
+            "fees",
+            "What is the online registration fee?",
+            "answer",
+            ["Rs. 365"],
+            ["fees.txt"],
+        )
+    ]
+    outcome = await runner.run_evaluation("answer", use_judge=True, cases=cases)
+    row = outcome.results[0]
+    assert row["passed"] and "judge provider down" in row["judge_error"]

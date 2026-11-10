@@ -40,13 +40,13 @@ def _extract_json(raw: str) -> dict | None:
 class HistoryCondenser:
     def __init__(self, llm_client: LiteLLMClient | None = None, max_turns: int = 2):
         self.llm_client = llm_client
-        self.max_messages = max(1, max_turns) * 2
+        self.max_messages = max(0, max_turns) * 2  # 0 turns = context switched off
 
     async def condense(
         self, query: str, history: list[dict[str, str]] | None = None
     ) -> tuple[str, int]:
         """Return (standalone question, tokens used). No history → no LLM call."""
-        if not history or self.llm_client is None:
+        if not history or self.llm_client is None or self.max_messages == 0:
             return query, 0
 
         payload = json.dumps(
