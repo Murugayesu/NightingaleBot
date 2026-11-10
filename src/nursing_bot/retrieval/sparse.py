@@ -1,9 +1,73 @@
+"""Sparse (keyword) search: PostgreSQL full-text search over the `tsv` column.
+
+Two tiers:
+  1. all words must match (websearch_to_tsquery: Google-like syntax, never errors)
+  2. if nothing matched, any word may match ("fee or registration or ...")
+
+Tier 2 boosts recall for long questions. It does not decide whether we answer;
+the relevance gate uses dense similarity for that.
+"""
+
+import re
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nursing_bot.retrieval.metadata import build_filter_sql
+from nursing_bot.retrieval.metadata import SELECT_COLUMNS, build_filter_sql
+
+# Words that carry no meaning on their own (also websearch operators).
+_STOP_WORDS = frozenset(
+    {
+        "and",
+        "or",
+        "not",
+        "the",
+        "what",
+        "how",
+        "who",
+        "when",
+        "where",
+        "which",
+        "can",
+        "for",
+        "are",
+        "does",
+        "with",
+    }
+)
+_PUNCTUATION = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _any_word_query(query: str) -> str:
+    words = [
+        w
+        for w in _PUNCTUATION.sub(" ", query).split()
+        if len(w) > 2 and w.lower() not in _STOP_WORDS
+    ]
+    return " or ".join(dict.fromkeys(words))  # keep order, drop duplicates
+
+
+async def _search(
+    session: AsyncSession,
+    tsquery_text: str,
+    limit: int,
+    filters: dict[str, Any] | None,
+    chunk_status: str,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"query": tsquery_text, "limit": limit}
+    where = build_filter_sql(filters, params, chunk_status=chunk_status)
+    sql = f"""
+        SELECT {SELECT_COLUMNS},
+               ts_rank_cd(c.tsv, websearch_to_tsquery('english', :query)) AS rank
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.tsv @@ websearch_to_tsquery('english', :query) AND {where}
+        ORDER BY rank DESC
+        LIMIT :limit
+    """
+    result = await session.execute(text(sql), params)
+    return [dict(row) for row in result.mappings().all()]
 
 
 async def run_sparse_search(
@@ -13,69 +77,12 @@ async def run_sparse_search(
     filters: dict[str, Any] | None = None,
     chunk_status: str = "active",
 ) -> list[dict[str, Any]]:
-    """Execute sparse lexical full-text search using PostgreSQL tsvector and GIN index."""
-    params: dict[str, Any] = {
-        "query": query,
-        "limit": limit,
-    }
-    filter_clause = build_filter_sql(filters, params, chunk_status=chunk_status)
-
-    query_sql = f"""
-        SELECT c.id, c.document_id, c.content,
-               c.metadata, c.page_number, c.heading_hierarchy,
-               ts_rank_cd(c.tsv, websearch_to_tsquery('english', :query)) as rank
-        FROM chunks c
-        JOIN documents d ON d.id = c.document_id
-        WHERE c.tsv @@ websearch_to_tsquery('english', :query)
-          AND {filter_clause}
-        ORDER BY rank DESC
-        LIMIT :limit
-    """
-    result = await session.execute(text(query_sql), params)
-    rows = result.mappings().all()
-
-    if not rows and query.strip():
-        fallback_sql = f"""
-            SELECT c.id, c.document_id, c.content,
-                   c.metadata, c.page_number, c.heading_hierarchy,
-                   ts_rank_cd(c.tsv, plainto_tsquery('english', :query)) as rank
-            FROM chunks c
-            JOIN documents d ON d.id = c.document_id
-            WHERE c.tsv @@ plainto_tsquery('english', :query)
-              AND {filter_clause}
-            ORDER BY rank DESC
-            LIMIT :limit
-        """
-        result = await session.execute(text(fallback_sql), params)
-        rows = result.mappings().all()
-
-    if not rows and query.strip():
-        stop_words = {"not", "and", "or"}
-        tokens = [
-            t
-            for t in "".join(c if c.isalnum() else " " for c in query).split()
-            if len(t) > 2 and t.lower() not in stop_words
-        ]
-        if tokens:
-            or_query = " | ".join(tokens)
-            or_params = {"or_query": or_query, "limit": limit}
-            or_filter = build_filter_sql(filters, or_params, chunk_status=chunk_status)
-            or_sql = f"""
-                SELECT c.id, c.document_id, c.content,
-                       c.metadata, c.page_number, c.heading_hierarchy,
-                       ts_rank_cd(c.tsv, to_tsquery('english', :or_query)) as rank
-                FROM chunks c
-                JOIN documents d ON d.id = c.document_id
-                WHERE c.tsv @@ to_tsquery('english', :or_query)
-                  AND {or_filter}
-                ORDER BY rank DESC
-                LIMIT :limit
-            """
-            try:
-                async with session.begin_nested():
-                    result = await session.execute(text(or_sql), or_params)
-                    rows = result.mappings().all()
-            except Exception:  # noqa: BLE001, S110
-                pass
-
-    return [dict(row) for row in rows]
+    """Return up to `limit` rows ranked by full-text relevance."""
+    if not query.strip():
+        return []
+    rows = await _search(session, query, limit, filters, chunk_status)
+    if not rows:
+        any_word = _any_word_query(query)
+        if any_word:
+            rows = await _search(session, any_word, limit, filters, chunk_status)
+    return rows

@@ -1,20 +1,48 @@
+"""Turn user filters into a safe SQL WHERE clause shared by dense and sparse search.
+
+Safety: filter *values* are always bound parameters. Filter *keys* only reach
+the SQL text when they are on a fixed allow-list of column names; any other
+key is matched inside the JSONB metadata through a bound containment value.
+"""
+
 import json
+import uuid
 from typing import Any
 
-DOC_COLUMNS = frozenset({"doc_type", "content_type", "filename"})
-CHUNK_COLUMNS = frozenset({"status", "document_id", "page_number"})
+# Columns selected by every retrieval query (dense and sparse return the same shape).
+SELECT_COLUMNS = """
+    c.id, c.document_id, c.content, c.contextualised_text, c.metadata,
+    c.page_number, c.heading_hierarchy, d.filename
+"""
+
+_DOCUMENT_COLUMNS = frozenset({"doc_type", "content_type", "filename"})
 
 
 def normalize_filter_dict(filters: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize filter keys and values, removing None or empty entries."""
+    """Drop empty values and flatten the `extra` bag into top-level keys.
+
+    `{"doc_type": "faq", "extra": {"year": 2024}, "district": None}`
+    → `{"doc_type": "faq", "year": 2024}`
+    """
     if not filters:
         return {}
-    cleaned = {}
-    for k, v in filters.items():
-        if v is None:
+    flat: dict[str, Any] = {}
+    extra = filters.get("extra")
+    items = list(filters.items())
+    if isinstance(extra, dict):
+        items = [(k, v) for k, v in items if k != "extra"] + list(extra.items())
+    for key, value in items:
+        key = str(key).strip()
+        if not key or value is None:
             continue
-        cleaned[str(k).strip()] = v
-    return cleaned
+        if isinstance(value, (list, tuple, set, dict, str)) and len(value) == 0:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            value = [v for v in value if v is not None and v != ""]
+            if not value:
+                continue
+        flat[key] = value
+    return flat
 
 
 def build_filter_sql(
@@ -23,33 +51,59 @@ def build_filter_sql(
     *,
     chunk_status: str = "active",
 ) -> str:
-    """Construct SQL WHERE predicate clauses with parameter binding."""
+    """Return a WHERE predicate (without the WHERE keyword) and fill `params`.
+
+    Several values for one key are OR-ed; different keys are AND-ed.
+    """
     clauses = ["c.status = :chunk_status"]
     params["chunk_status"] = chunk_status
 
-    normalized = normalize_filter_dict(filters)
-    for index, (key, value) in enumerate(normalized.items()):
-        values = value if isinstance(value, list) else [value]
-        if not values:
-            continue
-
+    for key_index, (key, value) in enumerate(normalize_filter_dict(filters).items()):
+        values = list(value) if isinstance(value, (list, tuple, set)) else [value]
         alternatives: list[str] = []
         for value_index, item in enumerate(values):
-            param_name = f"f_{index}_{value_index}"
-            if key in DOC_COLUMNS:
-                alternatives.append(f"LOWER(d.{key}) = :{param_name}")
-                params[param_name] = str(item).casefold()
+            name = f"f_{key_index}_{value_index}"
+            if key in _DOCUMENT_COLUMNS:
+                alternatives.append(f"LOWER(d.{key}) = :{name}")
+                params[name] = str(item).casefold()
             elif key == "document_id":
-                alternatives.append(f"c.document_id = CAST(:{param_name} AS uuid)")
-                params[param_name] = str(item)
+                alternatives.append(f"c.document_id = CAST(:{name} AS uuid)")
+                params[name] = str(_as_uuid(item))
             elif key == "page_number":
-                alternatives.append(f"c.page_number = :{param_name}")
-                params[param_name] = item
+                alternatives.append(f"c.page_number = :{name}")
+                params[name] = _as_int(item)
             else:
-                alternatives.append(f"c.metadata @> CAST(:{param_name} AS jsonb)")
-                params[param_name] = json.dumps({key: item})
-
-        if alternatives:
-            clauses.append(f"({' OR '.join(alternatives)})")
+                alternatives.append(f"c.metadata @> CAST(:{name} AS jsonb)")
+                params[name] = json.dumps({key: item})
+        clauses.append(f"({' OR '.join(alternatives)})")
 
     return " AND ".join(clauses)
+
+
+class InvalidFilterError(ValueError):
+    """A filter value has the wrong type (the API turns this into HTTP 422)."""
+
+
+def _as_uuid(value: Any) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(value))
+    except ValueError as exc:
+        raise InvalidFilterError(
+            f"document_id filter {value!r} is not a UUID."
+        ) from exc
+
+
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool):
+        raise InvalidFilterError("page_number filter must be a whole number.")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidFilterError(
+            f"page_number filter {value!r} is not a whole number."
+        ) from exc
+
+
+def validate_filters(filters: dict[str, Any] | None) -> None:
+    """Raise InvalidFilterError before any query runs if a filter value is unusable."""
+    build_filter_sql(filters, {})

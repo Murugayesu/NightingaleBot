@@ -1,159 +1,178 @@
-import asyncio
-import uuid
+"""Hybrid retriever: dense + sparse search, fused with RRF, optionally reranked.
+
+    question ──embed──► dense search  ─┐
+            └─────────► sparse search ─┴► RRF fusion ─► (rerank) ─► top-k chunks
+
+Implements LangChain's BaseRetriever (async), so it also plugs into LangChain
+chains; the RAG pipeline calls `aretrieve()` directly to get the gate signals.
+"""
+
+import logging
+from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.callbacks import (
+    AsyncCallbackManagerForRetrieverRun,
+    CallbackManagerForRetrieverRun,
+)
 from langchain_core.documents import Document as LCDocument
 from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from nursing_bot.models.litellm_client import LiteLLMClient
+from nursing_bot.observability import tracer
 from nursing_bot.retrieval.dense import run_dense_search
 from nursing_bot.retrieval.fusion import reciprocal_rank_fusion
 from nursing_bot.retrieval.rerank import rerank_candidates
 from nursing_bot.retrieval.sparse import run_sparse_search
 from nursing_bot.storage.database import enable_hnsw_iterative_scan
 
+logger = logging.getLogger(__name__)
+
+SNIPPET_CHARS = 300
+
+
+@dataclass
+class RetrievalResult:
+    documents: list[LCDocument] = field(default_factory=list)
+    top_similarity: float | None = None  # best dense cosine similarity
+    top_rerank: float | None = None  # best rerank score (None if not reranked)
+
 
 class PostgresHybridRetriever(BaseRetriever):
-    """PostgreSQL hybrid search retriever implementing LangChain's BaseRetriever interface."""
-
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    session: Any
-    llm_client: Any
-    top_k: int = 10
+    llm_client: LiteLLMClient
+    session: AsyncSession | None = None  # used only by the LangChain interface
+    top_k: int = 8
     rrf_k: int = 60
     rerank_enabled: bool = False
     rerank_top_n: int = 5
+    # Batch jobs (evaluation) wait out embedding rate limits; live chat fails fast.
+    patient_embeddings: bool = False
     default_filters: dict[str, Any] = Field(default_factory=dict)
 
+    # ---------------------------------------------------- LangChain interface
     def _get_relevant_documents(
-        self,
-        query: str,
-        *,
-        run_manager: CallbackManagerForRetrieverRun | None = None,
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[LCDocument]:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            try:
-                import nest_asyncio
-
-                nest_asyncio.apply()
-                return loop.run_until_complete(
-                    self._aget_relevant_documents(query, run_manager=run_manager)
-                )
-            except Exception:  # noqa: BLE001, S110
-                pass
-
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    self._aget_relevant_documents(query, run_manager=run_manager),
-                )
-                return future.result()
-
-        return asyncio.run(
-            self._aget_relevant_documents(query, run_manager=run_manager)
+        raise NotImplementedError(
+            "PostgresHybridRetriever is async-only; use ainvoke()."
         )
 
     async def _aget_relevant_documents(
-        self,
-        query: str,
-        *,
-        run_manager: CallbackManagerForRetrieverRun | None = None,
+        self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun
     ) -> list[LCDocument]:
-        return await self.asearch(
-            query=query,
-            session=self.session,
-            filters=self.default_filters,
-            top_k=self.top_k,
+        if self.session is None:
+            raise ValueError(
+                "Set `session` on the retriever to use the LangChain interface."
+            )
+        result = await self.aretrieve(
+            query, self.session, self.default_filters, self.top_k
         )
+        return result.documents
 
-    async def asearch(
+    # ------------------------------------------------------------- main API
+    async def aretrieve(
         self,
         query: str,
-        session: Any = None,
+        session: AsyncSession,
         filters: dict[str, Any] | None = None,
         top_k: int | None = None,
-    ) -> list[LCDocument]:
-        active_session = session if session is not None else self.session
+    ) -> RetrievalResult:
+        k = top_k or self.top_k
         active_filters = filters if filters is not None else self.default_filters
-        active_top_k = top_k or self.top_k
 
-        if active_session is not None:
-            await enable_hnsw_iterative_scan(active_session)
+        with tracer.start_as_current_span("retrieval.hybrid") as span:
+            span.set_attribute("retrieval.query", query)
+            span.set_attribute("retrieval.top_k", k)
 
-        # 1. Dense vector search
-        query_vector = await self.llm_client.aembed_query(query)
-        dense_results = await run_dense_search(
-            session=active_session,
-            query_vector=query_vector,
-            limit=active_top_k * 2,
-            filters=active_filters,
+            await enable_hnsw_iterative_scan(session)
+            (query_vector,) = await self.llm_client.aembed_texts(
+                [query], patient=self.patient_embeddings
+            )
+            dense = await run_dense_search(
+                session,
+                query_vector,
+                embedding_model=self.llm_client.embedding_model,
+                limit=k * 2,
+                filters=active_filters,
+            )
+            sparse = await run_sparse_search(
+                session, query, limit=k * 2, filters=active_filters
+            )
+
+            top_similarity = max((float(r["similarity"]) for r in dense), default=None)
+            dense_by_id = {r["id"]: r for r in dense}
+
+            rrf = reciprocal_rank_fusion(
+                {r["id"]: i + 1 for i, r in enumerate(dense)},
+                {r["id"]: i + 1 for i, r in enumerate(sparse)},
+                k=self.rrf_k,
+            )
+            payloads = {r["id"]: r for r in sparse} | dense_by_id
+            candidates = []
+            for chunk_id in sorted(rrf, key=lambda cid: rrf[cid], reverse=True)[:k]:
+                candidate = dict(payloads[chunk_id])
+                candidate["rrf_score"] = rrf[chunk_id]
+                candidate["similarity"] = dense_by_id.get(chunk_id, {}).get(
+                    "similarity"
+                )
+                candidates.append(candidate)
+
+            top_rerank = None
+            if self.rerank_enabled and candidates:
+                try:
+                    candidates = await rerank_candidates(
+                        self.llm_client, query, candidates, top_n=self.rerank_top_n
+                    )
+                    top_rerank = max(
+                        (c["rerank_score"] for c in candidates), default=None
+                    )
+                except Exception as exc:  # noqa: BLE001 - degrade to the similarity gate
+                    logger.warning("Reranking failed, using fused order: %s", exc)
+
+            span.set_attribute("retrieval.dense_hits", len(dense))
+            span.set_attribute("retrieval.sparse_hits", len(sparse))
+            span.set_attribute("retrieval.top_similarity", top_similarity or 0.0)
+
+        return RetrievalResult(
+            documents=[_to_document(i, c) for i, c in enumerate(candidates, start=1)],
+            top_similarity=top_similarity,
+            top_rerank=top_rerank,
         )
 
-        # 2. Sparse full-text search
-        sparse_results = await run_sparse_search(
-            session=active_session,
-            query=query,
-            limit=active_top_k * 2,
-            filters=active_filters,
-        )
 
-        # 3. Reciprocal Rank Fusion
-        dense_ranks = {item["id"]: idx + 1 for idx, item in enumerate(dense_results)}
-        sparse_ranks = {item["id"]: idx + 1 for idx, item in enumerate(sparse_results)}
-        rrf_scores = reciprocal_rank_fusion(dense_ranks, sparse_ranks, k=self.rrf_k)
+def _best_score(candidate: dict[str, Any]) -> float:
+    """The single score shown to users: the strongest calibrated signal available."""
+    for key in ("rerank_score", "similarity"):
+        if candidate.get(key) is not None:
+            return float(candidate[key])
+    return 0.0
 
-        payloads: dict[uuid.UUID, dict[str, Any]] = {}
-        for item in dense_results + sparse_results:
-            payloads[item["id"]] = item
 
-        sorted_ids = sorted(
-            rrf_scores.keys(),
-            key=lambda x: rrf_scores[x],
-            reverse=True,
-        )[:active_top_k]
-
-        candidates: list[dict[str, Any]] = []
-        for chunk_id in sorted_ids:
-            payload = dict(payloads[chunk_id])
-            payload["score"] = rrf_scores[chunk_id]
-            candidates.append(payload)
-
-        # 4. Optional Cross-Encoder Reranking
-        if self.rerank_enabled and candidates:
-            candidates = await rerank_candidates(
-                llm_client=self.llm_client,
-                query=query,
-                candidates=candidates,
-                top_n=self.rerank_top_n,
-            )
-
-        # 5. Build standardized LangChain Documents
-        documents: list[LCDocument] = []
-        for rank_idx, cand in enumerate(candidates, start=1):
-            metadata = dict(cand.get("metadata") or {})
-            metadata.update(
-                {
-                    "source_index": rank_idx,
-                    "chunk_id": str(cand["id"]),
-                    "document_id": str(cand["document_id"]),
-                    "score": cand.get("rerank_score", cand.get("score", 0.0)),
-                    "heading_hierarchy": cand.get("heading_hierarchy", []),
-                    "page_number": cand.get("page_number"),
-                }
-            )
-            doc = LCDocument(
-                page_content=cand["content"],
-                metadata=metadata,
-            )
-            documents.append(doc)
-
-        return documents
+def _to_document(rank: int, candidate: dict[str, Any]) -> LCDocument:
+    similarity = candidate.get("similarity")
+    metadata = dict(candidate.get("metadata") or {})
+    metadata.update(
+        {
+            "source_index": rank,
+            "chunk_id": str(candidate["id"]),
+            "document_id": str(candidate["document_id"]),
+            "title": candidate.get("filename") or metadata.get("source", ""),
+            "page_number": candidate.get("page_number"),
+            "heading_hierarchy": candidate.get("heading_hierarchy") or [],
+            "rrf_score": candidate.get("rrf_score"),
+            "similarity": float(similarity) if similarity is not None else None,
+            "rerank_score": candidate.get("rerank_score"),
+            "score": _best_score(candidate),
+            "snippet": (candidate.get("content") or "")[:SNIPPET_CHARS],
+        }
+    )
+    # The LLM sees the context-prefixed text: the same string that was embedded.
+    return LCDocument(
+        page_content=candidate.get("contextualised_text")
+        or candidate.get("content", ""),
+        metadata=metadata,
+    )

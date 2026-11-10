@@ -1,3 +1,5 @@
+"""Optional cross-encoder reranking of fused candidates (Cohere / Jina / Voyage via LiteLLM)."""
+
 from typing import Any
 
 from nursing_bot.models.litellm_client import LiteLLMClient
@@ -9,28 +11,20 @@ async def rerank_candidates(
     candidates: list[dict[str, Any]],
     top_n: int = 5,
 ) -> list[dict[str, Any]]:
-    """Rerank retrieval candidate chunks using cross-encoder."""
+    """Return the best `top_n` candidates, best first, each with a `rerank_score`.
+
+    Raises if the rerank provider fails; the retriever decides how to degrade.
+    """
     if not candidates:
         return []
-
-    documents = [c["content"] for c in candidates]
-    rerank_results = await llm_client.arerank(
+    results = await llm_client.arerank(
         query=query,
-        documents=documents,
+        documents=[c.get("contextualised_text") or c["content"] for c in candidates],
         top_n=top_n,
     )
-
-    reranked: list[dict[str, Any]] = []
-    for item in rerank_results:
-        idx = item.get("index") if isinstance(item, dict) else getattr(item, "index", 0)
-        score = (
-            item.get("relevance_score")
-            if isinstance(item, dict)
-            else getattr(item, "relevance_score", 0.0)
-        )
-        if 0 <= idx < len(candidates):
-            c_copy = dict(candidates[idx])
-            c_copy["rerank_score"] = score
-            reranked.append(c_copy)
-
-    return reranked or candidates[:top_n]
+    reranked = []
+    for result in results[:top_n]:
+        candidate = dict(candidates[result.index])
+        candidate["rerank_score"] = result.relevance_score
+        reranked.append(candidate)
+    return reranked

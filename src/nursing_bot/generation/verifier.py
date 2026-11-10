@@ -1,77 +1,112 @@
+"""Post-generation check: is the answer actually backed by citations?
+
+An answer passes when:
+  * it is not the model's own "not available" reply,
+  * every [Source N] tag points at a source we really provided, and
+  * at least CITATION_MIN_COVERAGE of its factual sentences carry a tag
+    (a tag at the end of a list or paragraph covers the lines before it).
+
+Answers that fail are replaced by the abstention message.
+"""
+
 import re
 from dataclasses import dataclass
 from typing import Any
 
-from nursing_bot.config import get_settings
+SOURCE_TAG = re.compile(r"\[Source\s+(\d+)\]", re.IGNORECASE)
+# "[Sources 1, 2]", "[Source 1; Source 3]", "[Sources 1 and 2]" → "[Source 1] [Source 2]"
+_SOURCE_GROUP = re.compile(
+    r"\[Sources?\s+\d+(?:\s*(?:,|;|&|\band\b)\s*(?:Sources?\s+)?\d+)*\]", re.IGNORECASE
+)
+_ANY_SOURCE_MENTION = re.compile(r"\[Sources?\b", re.IGNORECASE)
+# Sentence ends: ". " "! " "? " or a line break, but not after abbreviations
+# common in council documents ("Rs. 365", "No. 12", "Dr. Rao", "e.g. this").
+_SENTENCE_SPLIT = re.compile(
+    r"(?<!\bRs\.)(?<!\bNo\.)(?<!\bDr\.)(?<!\bSt\.)(?<!\bvs\.)(?<!\bMr\.)(?<!\bMs\.)"
+    r"(?<!\be\.g\.)(?<!\bi\.e\.)(?<=[.!?])\s+|\n+"
+)
+_MODEL_ABSTAINED = re.compile(
+    r"(not available in the records|no information (?:is )?available|cannot find|could not find)",
+    re.IGNORECASE,
+)
+_MIN_FACTUAL_WORDS = 3
 
 
 @dataclass
 class VerificationResult:
     is_grounded: bool
     final_answer: str
-    confidence_score: float
+    coverage: float
     notes: str = ""
 
 
-class CitationCoverageVerifier:
-    """Verifies and normalizes inline citation tags ([Source N])."""
-
-    SOURCE_TAG = re.compile(r"\[Source\s+(\d+)\]", re.IGNORECASE)
-    SOURCE_MENTION = re.compile(r"\[Sources?\b", re.IGNORECASE)
-    SOURCE_GROUP = re.compile(
-        r"\[Sources?\s+\d+(?:\s*(?:,|;|&|\band\b)\s*(?:Sources?\s+)?\d+)*\]",
-        re.IGNORECASE,
+def normalize_citations(answer: str) -> str:
+    return _SOURCE_GROUP.sub(
+        lambda m: " ".join(f"[Source {int(n)}]" for n in re.findall(r"\d+", m.group())),
+        answer,
     )
 
-    ABSTENTION_MESSAGE = get_settings().RAG_ABSTENTION_MESSAGE
 
+def _is_factual(sentence: str) -> bool:
+    """A statement worth citing: at least 3 words (tags excluded), not a lead-in like 'Steps:'."""
+    words = SOURCE_TAG.sub(" ", sentence).split()
+    return len(words) >= _MIN_FACTUAL_WORDS and not sentence.rstrip().endswith(":")
+
+
+def citation_coverage(answer: str) -> float:
+    """Share of factual sentences that carry, or are followed within their
+    paragraph by, a [Source N] tag.
+
+    A tag later in the same paragraph counts, so one tag after a short list
+    covers the list. Answers too short to contain a "factual sentence" (for
+    example "Five years [Source 1].") count as fully covered: the caller has
+    already checked that at least one valid tag is present.
+    """
+    coverage_flags: list[bool] = []
+    for paragraph in re.split(r"\n\s*\n", answer):
+        sentences = [s.strip() for s in _SENTENCE_SPLIT.split(paragraph) if s.strip()]
+        for i, sentence in enumerate(sentences):
+            if _is_factual(sentence):
+                coverage_flags.append(any(SOURCE_TAG.search(s) for s in sentences[i:]))
+    return sum(coverage_flags) / len(coverage_flags) if coverage_flags else 1.0
+
+
+class CitationCoverageVerifier:
     @classmethod
     def verify(
         cls,
         answer: str,
         citations: list[dict[str, Any]],
-        gate_passed: bool,
+        abstention_message: str,
+        min_coverage: float = 0.5,
     ) -> VerificationResult:
-        settings = get_settings()
-        abstention_message = settings.RAG_ABSTENTION_MESSAGE
+        def fail(notes: str, coverage: float = 0.0) -> VerificationResult:
+            return VerificationResult(False, abstention_message, coverage, notes)
 
-        if not gate_passed or not citations:
-            return VerificationResult(
-                is_grounded=False,
-                final_answer=abstention_message,
-                confidence_score=0.0,
-                notes="Retrieval gate failed or no supporting citations present.",
-            )
+        if not answer.strip() or not citations:
+            return fail("Empty answer or no sources.")
 
-        normalized_answer = cls.SOURCE_GROUP.sub(
-            lambda match: " ".join(
-                f"[Source {int(index)}]" for index in re.findall(r"\d+", match.group())
-            ),
-            answer,
-        )
+        normalized = normalize_citations(answer)
+        tags = [int(n) for n in SOURCE_TAG.findall(normalized)]
+        if not tags:
+            if _MODEL_ABSTAINED.search(normalized):
+                return fail(
+                    "The model reported that the sources do not contain the answer."
+                )
+            return fail("Answer has no [Source N] citations.")
 
-        valid_indices = {c["source_index"] for c in citations}
-        tags = cls.SOURCE_TAG.findall(normalized_answer)
+        valid = {c["source_index"] for c in citations}
+        if any(t not in valid for t in tags):
+            return fail("Answer cites a source that was not provided.")
+        if len(tags) < len(_ANY_SOURCE_MENTION.findall(normalized)):
+            return fail("Answer contains malformed citation tags.")
 
-        # Check for citation mentions that did not resolve to valid numbered tags
-        all_mentions = cls.SOURCE_MENTION.findall(normalized_answer)
-
-        if (
-            not answer.strip()
-            or not tags
-            or len(tags) < len(all_mentions)
-            or any(int(index) not in valid_indices for index in tags)
-        ):
-            return VerificationResult(
-                is_grounded=False,
-                final_answer=abstention_message,
-                confidence_score=0.0,
-                notes="Answer has no valid inline citations or cites an unknown source.",
+        coverage = citation_coverage(normalized)
+        if coverage < min_coverage:
+            return fail(
+                f"Only {coverage:.0%} of factual sentences are cited.", coverage
             )
 
         return VerificationResult(
-            is_grounded=True,
-            final_answer=normalized_answer,
-            confidence_score=0.95,
-            notes="Answer verified with valid inline source citations.",
+            True, normalized, coverage, "Answer verified against sources."
         )
