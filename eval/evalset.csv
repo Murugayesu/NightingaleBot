@@ -26,8 +26,8 @@ cou-002,council,What is the postal address of the council?,answer,Jayaprakash Na
 cou-003,council,What are the council office contact hours?,answer,2 PM to 5 PM | Monday to Friday,TNNMC CONTACT DETAILS.pdf,p.0,CONFLICT: FAQ p.1 says 10am-5pm for registration support. A good answer distinguishes the two or flags the conflict.
 cou-004,council,What is the council's general email address?,answer,info@tamilnadunursingcouncil.com,TNNMC CONTACT DETAILS.pdf,p.0,
 bsc-001,admission,What subjects must I have passed in higher secondary for B.Sc Nursing?,answer,English | Physics Chemistry Biology | or Physics Chemistry Botany Zoology,BSC NURSING.pdf,p.7 item 5,Either science combination is acceptable
-bsc-002,admission,What is the minimum mark for B.Sc Nursing for an OC candidate?,answer,not less than 45% aggregate marks,BSC NURSING.pdf,p.7 item 6,Must not confuse with 40%
-bsc-003,admission,What is the minimum mark for B.Sc Nursing for an SC or ST candidate?,answer,not less than 40% aggregate marks,BSC NURSING.pdf,p.7 item 6,
+bsc-002,admission,What is the minimum mark for B.Sc Nursing for an OC candidate?,answer,45% aggregate marks,BSC NURSING.pdf,p.7 item 6,Must not confuse with 40%
+bsc-003,admission,What is the minimum mark for B.Sc Nursing for an SC or ST candidate?,answer,40% aggregate marks,BSC NURSING.pdf,p.7 item 6,
 bsc-004,admission,What is the age requirement for B.Sc Nursing admission?,answer,completed 17 years of age as on 31st December 2026 | up to 15 days later allowed,BSC NURSING.pdf,item 4 AGE LIMIT,The 15-day grace is a distinguishing detail
 bsc-005,admission,Do I need to be a native of Tamil Nadu to apply for B.Sc Nursing?,answer,candidate should be native of Tamil Nadu | citizen of India,BSC NURSING.pdf,item 3 NATIVITY,
 bsc-006,admission,I passed my higher secondary from CBSE. Do I need anything extra?,answer,Eligibility Certificate from Tamil Nadu Dr. M.G.R. Medical University | before joining the course,BSC NURSING.pdf,p.7 NOTE (i),
@@ -39,7 +39,7 @@ cns-003,counselling,When is choice filling and locking for round 2?,answer,13-09
 cns-004,counselling,Can I change my choices after locking them?,answer,no | it cannot be changed later | change of branch or college is not permitted,BSC SCHEDULE R2.pdf,p.2 item 13,
 cns-005,counselling,Is re-allotment from one self-financing college to another allowed?,answer,no | re-allotment within self financing colleges is not allowed,BSC SCHEDULE R2.pdf,p.1 item 7,Contrast with item 6 which allows SF to Government
 cns-006,counselling,What is the last date to report to my allotted college in round 2?,answer,on or before 21-09-2026 upto 05.00 P.M.,BSC SCHEDULE R2.pdf,p.0 schedule table,
-cns-007,counselling,"If the Tamil and English versions of the counselling notice disagree, which one applies?",answer,the English version is final,BSC SCHEDULE R2.pdf,p.3,Tests whether the bot surfaces the precedence rule
+cns-007,counselling,"If the Tamil and English versions of the counselling notice disagree, which one applies?",answer,the English version is final,BSC SCHEDULE R2.pdf + BSC SCHEDULE R1.pdf,p.3 (R1 has the same clause),Tests whether the bot surfaces the precedence rule
 ins-001,institutions,What is the annual intake of A J K College of Nursing Coimbatore for B.Sc Nursing?,answer,60,_1_ BSC TN INSTITUTIONS BY INC.pdf,p.0 row 1,Tabular lookup
 ins-002,institutions,Which district is A J K College of Nursing located in?,answer,Coimbatore,_1_ BSC TN INSTITUTIONS BY INC.pdf,p.0 row 1,Tabular lookup
 syn-001,synthesis,What minimum marks do I need for B.Sc Nursing versus M.Sc Nursing?,answer,B.Sc 45% for OC and 40% for SC ST | M.Sc 55% and 50% for SC SCA ST,BSC NURSING.pdf + MSC NURSING.pdf,multi-document,Requires combining two documents

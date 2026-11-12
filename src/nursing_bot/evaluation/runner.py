@@ -20,11 +20,14 @@ answer (one pipeline call per question, plus judge calls if enabled)
     Optional LLM-judge metrics: faithfulness and answer relevancy.
 """
 
+import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from functools import partial
+from typing import Any, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,6 +89,38 @@ def build_pipeline() -> GenerationPipeline:
     )
 
 
+# Free-tier providers fail in bursts (rate limits, upstream 502s). A case is
+# tried again after these pauses before it is recorded as errored, so one bad
+# minute does not ruin a whole run.
+RETRY_DELAYS_SECONDS: tuple[float, ...] = (15.0, 45.0)
+T = TypeVar("T")
+
+
+async def _with_retries(
+    case_id: str,
+    call: Callable[[], Awaitable[T]],
+    session: AsyncSession | None = None,
+) -> T:
+    """Run `call`, retrying after RETRY_DELAYS_SECONDS; re-raise the last error."""
+    for delay in (*RETRY_DELAYS_SECONDS, None):
+        try:
+            return await call()
+        except Exception as exc:
+            if delay is None:
+                raise
+            if session is not None:
+                await session.rollback()
+            logger.warning(
+                "Eval case %s failed (%s: %s); retrying in %.0fs",
+                case_id,
+                type(exc).__name__,
+                str(exc)[:120],
+                delay,
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def _errored(case: EvalCase, exc: Exception) -> dict[str, Any]:
     """A case that crashed (provider outage, timeout ...) counts as failed, with the reason."""
     logger.warning("Eval case %s errored: %s: %s", case.id, type(exc).__name__, exc)
@@ -120,7 +155,11 @@ async def evaluate_retrieval(
 
     for case in cases:
         try:
-            retrieval = await retriever.aretrieve(case.question, session, top_k=top_k)
+            retrieval = await _with_retries(
+                case.id,
+                partial(retriever.aretrieve, case.question, session, top_k=top_k),
+                session,
+            )
         except Exception as exc:  # noqa: BLE001 - one bad case must not abort the run
             await session.rollback()
             results.append(_errored(case, exc))
@@ -206,7 +245,11 @@ async def evaluate_answers(
 
     for case in cases:
         try:
-            response = await pipeline.aquery(session=session, query=case.question)
+            response = await _with_retries(
+                case.id,
+                partial(pipeline.aquery, session=session, query=case.question),
+                session,
+            )
         except Exception as exc:  # noqa: BLE001 - one bad case must not abort the run
             await session.rollback()
             results.append(_errored(case, exc))
@@ -243,8 +286,14 @@ async def evaluate_answers(
             )
             if judge is not None and grounded:
                 try:
-                    scores = await judge.score(
-                        case.question, response.answer, response.context_text
+                    scores = await _with_retries(
+                        case.id,
+                        partial(
+                            judge.score,
+                            case.question,
+                            response.answer,
+                            response.context_text,
+                        ),
                     )
                 except Exception as exc:  # noqa: BLE001 - judge trouble must not abort the run
                     logger.warning(

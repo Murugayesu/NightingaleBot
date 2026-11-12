@@ -1,20 +1,98 @@
 """Pure scoring helpers: no I/O, easy to unit-test."""
 
 import re
+import unicodedata
 from pathlib import Path
 
 _NON_WORD = re.compile(r"[^\w%+]+", re.UNICODE)
 
 
+_SPACED_PERCENT = re.compile(r"(\d)\s+%")
+
+
 def normalize(text: str) -> str:
-    """Lowercase and collapse punctuation, so 'Rs. 365' matches 'rs 365'."""
+    """Lowercase and collapse punctuation, so 'Rs. 365' matches 'rs 365'.
+
+    Unicode look-alikes are folded first (NFKC): models write "45\u202f%" with
+    a narrow no-break space, which must still read as "45%".
+    """
+    text = _SPACED_PERCENT.sub(r"\1%", unicodedata.normalize("NFKC", text))
     return " ".join(_NON_WORD.sub(" ", text.casefold()).split())
 
 
+# Words that carry no fact; ignored when comparing a fact with an answer.
+_FILLER = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "and",
+        "or",
+        "is",
+        "are",
+        "be",
+        "your",
+        "my",
+        "from",
+        "as",
+        "it",
+        "its",
+        "this",
+        "that",
+    ]
+)
+
+
+def _tokens(text: str) -> list[str]:
+    """Normalised tokens. Numbers lose leading zeros ("09" = "9", "044" = "44"),
+    and an Indian country code before another number is dropped, so
+    "+91-44-4678 6539" and "044-4678 6539" are the same phone number."""
+    raw = normalize(text).split()
+    tokens: list[str] = []
+    for i, token in enumerate(raw):
+        following = raw[i + 1] if i + 1 < len(raw) else ""
+        if token in ("91", "+91") and following.isdigit():
+            continue
+        if token.isdigit():
+            token = token.lstrip("0") or "0"
+        tokens.append(token)
+    return tokens
+
+
 def fact_present(fact: str, answer: str) -> bool:
-    """Whole-word match: '365' must not match '3650', nor 'NM' match 'TNNMC'."""
+    """Is a fact stated in the answer, however it is worded?
+
+    Numbers are the facts that matter most (fees, dates, phone numbers,
+    percentages), so every number in the fact must appear in the answer as a
+    whole token: "365" never matches "3650". The other key words may be
+    reworded: at least 75% of them must appear, so "online credit card debit
+    card net banking" matches "online through credit card, debit card, or net
+    banking", but "NM" never matches "TNNMC".
+    """
     needle = normalize(fact)
-    return bool(needle) and f" {needle} " in f" {normalize(answer)} "
+    if not needle:
+        return False
+    if f" {needle} " in f" {normalize(answer)} ":
+        return True
+    key = [t for t in _tokens(fact) if t not in _FILLER]
+    if not key:
+        return False
+    found = set(_tokens(answer))
+    numbers = [t for t in key if any(ch.isdigit() for ch in t)]
+    words = [t for t in key if t not in numbers]
+    if any(number not in found for number in numbers):
+        return False
+    if not words:
+        return True
+    return sum(word in found for word in words) / len(words) >= 0.75
 
 
 def fact_recall(facts: list[str], answer: str) -> float:

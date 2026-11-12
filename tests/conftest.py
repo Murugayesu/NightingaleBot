@@ -58,10 +58,16 @@ from nursing_bot.config import get_settings
 
 
 @pytest.fixture(autouse=True)
-def _fresh_settings_and_limits():
-    """Every test starts with default settings and no rate-limit history."""
+def _fresh_settings_and_limits(monkeypatch):
+    """Every test starts with default settings and no rate-limit history.
+
+    Evaluation retries happen at once instead of after real pauses.
+    """
     get_settings.cache_clear()
     limiter.reset()
+    monkeypatch.setattr(
+        "nursing_bot.evaluation.runner.RETRY_DELAYS_SECONDS", (0.0, 0.0)
+    )
     yield
     get_settings.cache_clear()
 

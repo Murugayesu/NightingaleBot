@@ -131,14 +131,24 @@ that long.
 ## Answer quality
 
 - **Pin the chat model.** `LLM_MODEL=auto` lets a routing gateway pick a different model for every
-  request. In live testing on 2026-11-12 the same official question was answered correctly
-  (Rs. 365, cited) in 16 of 18 calls and "not available in the records" in 2: the pipeline then
-  correctly declined rather than guess, but users see a needless "not found". Use one specific,
-  capable model and re-run `cli eval answer` after any change.
+  request, including code and reasoning models. In live testing on 2026-11-12 the same official
+  question was answered correctly (Rs. 365, cited) in 16 of 18 calls and "not available in the
+  records" in 2, and one trap question got a bare, wrong "Yes." Prefer a capable instruction
+  model that answers directly (in testing: `llama-3.3-70b-fp8-fast`); re-run `cli eval answer`
+  after any change.
+- **Set the relevance gate for your embedding model.** The default `GATE_THRESHOLD_SIMILARITY=0.30`
+  suits OpenAI embeddings. With `gemini-embedding-001` every question scores at least ~0.45
+  (even "a biryani recipe"), and official questions the documents answer score 0.54 to 0.82.
+  Use **0.50**: it passes every answerable question with a margin and stops most off-topic
+  questions before an answer is attempted. Re-check with `cli eval retrieval` after changing
+  documents or the embedding model.
 - **General answers can be switched off** at once with `GENERAL_ANSWERS_ENABLED=false`
   (everything the documents don't cover is then declined, as in 1.0).
 - The answer evaluation fails if any official question is answered from general knowledge
   (`official_fact_leaks` must be 0).
+- **Evaluation on free tiers.** A full answer run with `--judge` makes about 300 model calls and
+  can use up a free daily quota. Each case is retried after 15 s and 45 s before it counts as
+  errored; run again after the quota resets if `errored_cases` is not 0.
 
 ## Changing models
 
