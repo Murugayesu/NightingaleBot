@@ -1,12 +1,14 @@
 """Admin system endpoints: health, statistics, re-indexing, evaluation runs."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from nursing_bot.api.auth import require_admin
 from nursing_bot.api.dependencies import get_db, get_llm_client_dep, get_storage_dep
 from nursing_bot.api.schemas import (
     EvalRunDetail,
@@ -17,7 +19,6 @@ from nursing_bot.api.schemas import (
     ReindexResponse,
     SystemStatsResponse,
 )
-from nursing_bot.api.security import verify_admin_key
 from nursing_bot.config import get_settings
 from nursing_bot.evaluation.runner import create_eval_run
 from nursing_bot.jobs import dispatch_eval, dispatch_ingestion
@@ -26,14 +27,19 @@ from nursing_bot.storage.models import (
     ChatMessage,
     ChatSession,
     Chunk,
+    Conversation,
+    DailyTokenUsage,
     Document,
     DocumentStatus,
     EvalRun,
+    Message,
+    User,
 )
 from nursing_bot.storage.object_store import S3Backend
+from nursing_bot.usage import GLOBAL, today
 
 router = APIRouter(
-    prefix="/admin", tags=["Admin"], dependencies=[Depends(verify_admin_key)]
+    prefix="/admin", tags=["Admin"], dependencies=[Depends(require_admin)]
 )
 
 
@@ -114,12 +120,32 @@ async def admin_stats(
     async def count(column: Any) -> int:
         return int((await db.execute(select(func.count(column)))).scalar_one())
 
+    since = datetime.now(UTC) - timedelta(days=7)
+    modes = await db.execute(
+        select(Message.answer_mode, func.count())
+        .where(
+            Message.role == "assistant",
+            Message.answer_mode.is_not(None),
+            Message.is_imported.is_(False),
+            Message.created_at >= since,
+        )
+        .group_by(Message.answer_mode)
+    )
+    tokens_today = await db.scalar(
+        select(DailyTokenUsage.tokens).where(
+            DailyTokenUsage.day == today(), DailyTokenUsage.subject == GLOBAL
+        )
+    )
     return SystemStatsResponse(
         total_documents=sum(by_status.values()),
         documents_by_status=by_status,
         total_chunks=await count(Chunk.id),
         total_sessions=await count(ChatSession.id),
         total_messages=await count(ChatMessage.id),
+        total_users=await count(User.id),
+        total_conversations=await count(Conversation.id),
+        answers_last_7_days={str(mode): int(n) for mode, n in modes.all()},
+        tokens_today=int(tokens_today or 0),
         active_embedding_model=llm.embedding_model,
     )
 

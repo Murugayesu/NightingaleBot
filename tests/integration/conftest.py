@@ -20,10 +20,14 @@ from nursing_bot.api.dependencies import get_llm_client_dep, get_storage_dep
 from nursing_bot.api.main import app
 from nursing_bot.storage.database import dispose_engine, get_session
 from tests.conftest import TEST_DATABASE_URL
-from tests.fakes import FakeLLMClient, InMemoryStorage, cited_answer_from_prompt
+from tests.fakes import FakeLLMClient, InMemoryStorage, smart_fake_answer
 
 ADMIN = {"X-Admin-API-Key": "test-admin-key"}
-_TABLES = "chat_messages, chat_sessions, chunks, documents, eval_runs"
+_TABLES = (
+    "chat_messages, chat_sessions, chunks, documents, eval_runs, "
+    "users, auth_sessions, conversations, messages, message_feedback, "
+    "daily_token_usage"
+)
 
 
 def _libpq_url() -> str:
@@ -71,7 +75,7 @@ def db_clean_sync(migrated_database):
 
 @pytest.fixture
 def fake_llm() -> FakeLLMClient:
-    return FakeLLMClient(cited_answer_from_prompt)
+    return FakeLLMClient(smart_fake_answer)
 
 
 @pytest.fixture

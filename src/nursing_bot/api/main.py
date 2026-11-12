@@ -1,24 +1,26 @@
-"""FastAPI application: API routes, the web UI, security headers, lifecycle.
+"""FastAPI application: API routes, security headers, error handling, lifecycle.
 
 Run:  uvicorn nursing_bot.api.main:app
+
+The web app (frontend/) is static files served by Caddy; this process only
+answers /api/* and /health.
 """
 
 import logging
-import mimetypes
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 import openai
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
 from nursing_bot import __version__
-from nursing_bot.api.security import admin_key_valid, limiter
+from nursing_bot.accounts.errors import AccountError, AccountLockedError
+from nursing_bot.api.auth import is_admin_request
+from nursing_bot.api.security import limiter
 from nursing_bot.api.v1 import v1_router
 from nursing_bot.config import get_settings
 from nursing_bot.observability import (
@@ -27,20 +29,20 @@ from nursing_bot.observability import (
     setup_tracing,
 )
 from nursing_bot.storage.database import dispose_engine
+from nursing_bot.usage import UsageLimitError
 
 logger = logging.getLogger(__name__)
-
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
-
-# Windows can map .js to text/plain; browsers refuse module scripts served that way.
-mimetypes.add_type("text/javascript", ".js")
-mimetypes.add_type("text/css", ".css")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     settings.validate_production()
+    if settings.ENVIRONMENT == "production" and not settings.AUTH_COOKIE_SECURE:
+        logger.warning(
+            "AUTH_COOKIE_SECURE is false: sign-in cookies are sent over plain HTTP. "
+            "Fine on localhost or a trusted network; set it to true once HTTPS is on."
+        )
 
     task_app: Any = None
     if settings.INGESTION_MODE == "queue":
@@ -58,20 +60,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def _content_security_policy(path: str) -> str | None:
-    settings = get_settings()
-    page_policy = (
-        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-        "connect-src 'self'; base-uri 'none'; form-action 'self'"
-    )
-    if path.startswith("/ui/widget/"):
-        # embed.js is loaded by the council's pages, so it must stay cross-origin readable.
-        return f"{page_policy}; frame-ancestors {settings.widget_frame_ancestors}"
-    if path.startswith("/ui/"):
-        return f"{page_policy}; frame-ancestors 'none'"
     if path in ("/docs", "/redoc") or path.startswith("/docs/"):
-        return (
-            None  # Swagger UI loads its own assets; it is disabled in production anyway
-        )
+        # Swagger UI loads its own assets; it is disabled in production anyway.
+        return None
+    # Everything here is JSON or SSE: nothing may be rendered or framed.
     return "default-src 'none'; frame-ancestors 'none'"
 
 
@@ -111,8 +103,10 @@ async def request_guard(
             )
             if size > limit:
                 return _reject(413, f"Request body exceeds the {limit}-byte limit.")
-        if is_upload and not admin_key_valid(request.headers.get("x-admin-api-key")):
-            return _reject(401, "Invalid or missing X-Admin-API-Key header.")
+        if is_upload and not await is_admin_request(request):
+            return _reject(
+                401, "Sign in as an admin, or send a valid X-Admin-API-Key header."
+            )
     return await call_next(request)
 
 
@@ -124,8 +118,7 @@ async def security_headers(
     csp = _content_security_policy(path)
     if csp:
         response.headers["Content-Security-Policy"] = csp
-    if not path.startswith("/ui/widget/"):
-        response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
@@ -150,6 +143,27 @@ async def provider_error_handler(request: Request, exc: Exception) -> Response:
             "detail": "The assistant is temporarily unavailable. Please try again shortly."
         },
         headers={"Retry-After": "30"},
+    )
+
+
+async def account_error_handler(request: Request, exc: Exception) -> Response:
+    assert isinstance(exc, AccountError)
+    headers = (
+        {"Retry-After": str(exc.retry_after_seconds)}
+        if isinstance(exc, AccountLockedError)
+        else None
+    )
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.message}, headers=headers
+    )
+
+
+async def usage_limit_handler(request: Request, exc: Exception) -> Response:
+    assert isinstance(exc, UsageLimitError)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message},
+        headers={"Retry-After": "3600"},
     )
 
 
@@ -178,6 +192,8 @@ def create_app() -> FastAPI:
     # LiteLLM's provider exceptions (connection, timeout, 5xx, 429 ...) all
     # derive from openai.APIError.
     app.add_exception_handler(openai.APIError, provider_error_handler)
+    app.add_exception_handler(AccountError, account_error_handler)
+    app.add_exception_handler(UsageLimitError, usage_limit_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)
     # Registered first = runs inside security_headers, so its rejections
     # also carry the security headers.
@@ -188,6 +204,7 @@ def create_app() -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
+            # Cookies never cross origins: signed-in features are same-origin only.
             allow_credentials=False,
             allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["Content-Type", "X-Session-Token", "X-Admin-API-Key"],
@@ -196,21 +213,12 @@ def create_app() -> FastAPI:
     app.include_router(v1_router)
 
     @app.get("/", include_in_schema=False)
-    async def root() -> RedirectResponse:
-        return RedirectResponse("/ui/widget/chat.html")
+    async def root() -> dict[str, str]:
+        return {"service": f"{settings.KNOWLEDGE_BASE_NAME} API", "health": "/health"}
 
     @app.get("/health", tags=["System"])
     async def health() -> dict[str, Any]:
         return {"status": "ok", "version": __version__}
-
-    @app.get("/ui/admin", include_in_schema=False)
-    async def admin_panel() -> RedirectResponse:
-        # Relative redirect (so it stays correct behind the TLS proxy) to the
-        # trailing-slash URL that the panel's relative asset paths need.
-        return RedirectResponse("/ui/admin/", status_code=308)
-
-    # html=True serves index.html for directory URLs such as /ui/admin/.
-    app.mount("/ui", StaticFiles(directory=WEB_DIR, html=True), name="ui")
 
     setup_tracing("nursing-bot-api", settings)
     instrument_fastapi(app)

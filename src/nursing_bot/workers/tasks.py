@@ -70,6 +70,7 @@ async def run_eval_task(run_id: str) -> None:
 @app.task(queue="maintenance")
 async def purge_chat_history_task(timestamp: int) -> None:
     await jobs.purge_expired_chat_history()
+    await jobs.purge_expired_account_data()
 
 
 @app.periodic(cron="*/5 * * * *")

@@ -1,4 +1,4 @@
-"""API behaviour that needs no database: auth, validation, headers, static UI."""
+"""API behaviour that needs no database: auth, validation, headers, errors."""
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -23,17 +23,22 @@ async def test_health(client):
     assert response.json() == {"status": "ok", "version": __version__}
 
 
-async def test_root_redirects_to_widget(client):
+async def test_root_describes_the_api(client):
     response = await client.get("/")
-    assert (
-        response.status_code == 307
-        and response.headers["location"] == "/ui/widget/chat.html"
-    )
+    assert response.status_code == 200 and response.json()["health"] == "/health"
 
 
-async def test_widget_config_is_public(client):
-    body = (await client.get("/api/v1/widget/config")).json()
+async def test_app_config_is_public(client):
+    body = (await client.get("/api/v1/app/config")).json()
     assert body["require_session"] is True and body["max_query_chars"] == 4000
+    assert body["sign_in_methods"] == ["password"]
+    assert body["guest_chat_enabled"] is True and body["signup_enabled"] is True
+    assert "not from official TNNMC records" in body["general_answer_label"]
+
+
+async def test_the_old_widget_and_static_ui_are_gone(client):
+    for path in ("/ui/widget/chat.html", "/ui/admin/", "/api/v1/widget/config"):
+        assert (await client.get(path)).status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -107,30 +112,6 @@ async def test_api_responses_carry_strict_security_headers(client):
     )
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["x-content-type-options"] == "nosniff"
-
-
-async def test_widget_page_is_frameable_and_scripts_are_javascript(
-    client, settings_override
-):
-    settings_override(WIDGET_FRAME_ANCESTORS="https://council.example.org")
-    page = await client.get("/ui/widget/chat.html")
-    assert page.status_code == 200
-    assert page.headers["content-security-policy"].endswith(
-        "frame-ancestors 'self' https://council.example.org"
-    )
-    assert "x-frame-options" not in page.headers
-    script = await client.get("/ui/widget/chat.js")
-    assert script.headers["content-type"].startswith("text/javascript")
-
-
-async def test_admin_panel_is_served_and_not_frameable(client):
-    redirect = await client.get("/ui/admin")
-    assert redirect.status_code in (307, 308) and redirect.headers["location"].endswith(
-        "/ui/admin/"
-    )
-    page = await client.get("/ui/admin/")
-    assert page.status_code == 200
-    assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
 
 
 async def test_provider_outage_returns_503_json(client, settings_override):

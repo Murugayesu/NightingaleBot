@@ -143,34 +143,6 @@ def test_expired_session_token_is_rejected():
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("", "'self'"),
-        (
-            "https://www.tamilnadunursingcouncil.com",
-            "'self' https://www.tamilnadunursingcouncil.com",
-        ),
-        (
-            "'self' https://a.org, https://b.org:8443/",
-            "'self' https://a.org https://b.org:8443",
-        ),
-        ("https://*.gov.in", "'self' https://*.gov.in"),
-    ],
-)
-def test_widget_frame_ancestors_are_normalised(raw, expected):
-    """Regression: quoted CSP keywords were mangled by env-file parsers."""
-    assert Settings(WIDGET_FRAME_ANCESTORS=raw).widget_frame_ancestors == expected
-
-
-@pytest.mark.parametrize(
-    "bad", ["*", "javascript:alert(1)", "https://a.org/path", "a.org"]
-)
-def test_widget_frame_ancestors_rejects_non_origins(bad):
-    with pytest.raises(ValidationError):
-        Settings(WIDGET_FRAME_ANCESTORS=bad)
-
-
-@pytest.mark.parametrize(
     "phone",
     [
         "9876543210",

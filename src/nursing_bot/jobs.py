@@ -11,13 +11,21 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import BackgroundTasks
-from sqlalchemy import delete
+from sqlalchemy import delete, or_
 
 from nursing_bot.config import get_settings
 from nursing_bot.ingestion.pipeline import IngestionPipeline
 from nursing_bot.services import get_llm_client, get_storage
 from nursing_bot.storage.database import get_session
-from nursing_bot.storage.models import ChatSession, Document, DocumentStatus, EvalRun
+from nursing_bot.storage.models import (
+    AuthSession,
+    ChatSession,
+    Conversation,
+    DailyTokenUsage,
+    Document,
+    DocumentStatus,
+    EvalRun,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +57,44 @@ async def purge_expired_chat_history() -> int:
     deleted = int(getattr(result, "rowcount", 0) or 0)
     logger.info("Purged %d chat sessions older than %d days", deleted, days)
     return deleted
+
+
+USAGE_HISTORY_DAYS = 90
+
+
+async def purge_expired_account_data() -> dict[str, int]:
+    """Delete ended sign-in sessions, old daily usage counters and, when
+    CONVERSATION_RETENTION_DAYS is set, conversations inactive for longer."""
+    now = datetime.now(UTC)
+    counts: dict[str, int] = {}
+    async with get_session() as session:
+        result = await session.execute(
+            delete(AuthSession).where(
+                or_(
+                    AuthSession.expires_at < now,
+                    AuthSession.revoked_at < now - timedelta(days=1),
+                )
+            )
+        )
+        counts["auth_sessions"] = int(getattr(result, "rowcount", 0) or 0)
+        result = await session.execute(
+            delete(DailyTokenUsage).where(
+                DailyTokenUsage.day < (now - timedelta(days=USAGE_HISTORY_DAYS)).date()
+            )
+        )
+        counts["usage_days"] = int(getattr(result, "rowcount", 0) or 0)
+        days = get_settings().CONVERSATION_RETENTION_DAYS
+        counts["conversations"] = 0
+        if days > 0:
+            result = await session.execute(
+                delete(Conversation).where(
+                    Conversation.updated_at < now - timedelta(days=days)
+                )
+            )
+            counts["conversations"] = int(getattr(result, "rowcount", 0) or 0)
+        await session.commit()
+    logger.info("Purged expired account data: %s", counts)
+    return counts
 
 
 # --------------------------------------------------------------- dispatching
