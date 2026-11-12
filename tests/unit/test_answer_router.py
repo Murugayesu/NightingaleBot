@@ -67,6 +67,24 @@ def test_rules_route_only_what_they_are_sure_about(question, expected):
         ('"official_specific"', Route.OFFICIAL),
         ("I think it is general", None),
         ('{"category": 3}', None),
+        # Found by the live evaluation: a reasoning model thinks aloud first,
+        # quoting the instructions' example, and answers at the end.
+        (
+            (
+                'We need to classify. The format is {"category": "<one of the four>"}. '
+                "Aseptic technique is textbook knowledge, not an official fact, so not "
+                '"official_specific".\n{"category": "general_nursing"}'
+            ),
+            Route.GENERAL,
+        ),
+        (
+            (
+                'Maybe {"category": "official_specific"}? No: it is about cooking.\n'
+                '{"category": "out_of_scope"}'
+            ),
+            Route.OUT_OF_SCOPE,
+        ),
+        ('We need to classify. The question: "What is aseptic technique?" That', None),
     ],
 )
 def test_classifier_reply_parsing(raw, expected):

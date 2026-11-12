@@ -202,20 +202,23 @@ def classify_by_rules(question: str) -> Route | None:
     return None
 
 
+_CATEGORY_FIELD = re.compile(r'"category"\s*:\s*"([a-z_]+)"', re.IGNORECASE)
+
+
 def _parse_category(raw: str) -> Route | None:
-    text = raw.strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
+    """The category in the model's reply, or None.
+
+    Reasoning models think aloud before answering ("We need to classify ...
+    {"category": "general_nursing"}"), sometimes quoting the instructions'
+    own example first, so the LAST valid category field is the answer.
+    """
+    for value in reversed(_CATEGORY_FIELD.findall(raw)):
         try:
-            parsed = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            value = parsed.get("category")
-            if isinstance(value, str):
-                text = value
+            return Route(value.lower())
+        except ValueError:
+            continue
     try:
-        return Route(text.strip().strip("\"'").lower())
+        return Route(raw.strip().strip("\"'{} ").lower())
     except ValueError:
         return None
 
@@ -235,7 +238,9 @@ class AnswerRouter:
                 prompt=json.dumps({"question": question}, ensure_ascii=False),
                 system_prompt=_CLASSIFIER_PROMPT,
                 temperature=0.0,
-                max_tokens=20,
+                # Room for reasoning models to finish thinking and answer;
+                # other models stop after the short JSON anyway.
+                max_tokens=300,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Question routing failed, declining instead: %s", exc)
