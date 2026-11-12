@@ -4,13 +4,20 @@ import csv
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# answer        official question the documents answer: grounded, cited
+# abstain       official question they do not answer: must be declined
+# refuse        unsafe or abusive request: must not be answered
+# general       general nursing knowledge: a labelled general answer
+# out_of_scope  not about nursing: the scope message
+BEHAVIORS = ("answer", "abstain", "refuse", "general", "out_of_scope")
+
 
 @dataclass
 class EvalCase:
     id: str
     category: str
     question: str
-    expected_behavior: str  # answer | abstain | refuse
+    expected_behavior: str  # answer | abstain | refuse | general | out_of_scope
     expected_facts: list[str] = field(default_factory=list)
     source_files: list[str] = field(default_factory=list)
     source_locator: str = ""
@@ -31,7 +38,7 @@ def load_cases(path: str | Path) -> list[EvalCase]:
     cases = []
     for row in rows:
         behavior = (row.get("expected_behavior") or "").strip().lower()
-        if behavior not in {"answer", "abstain", "refuse"}:
+        if behavior not in BEHAVIORS:
             raise ValueError(f"{row.get('id')}: unknown expected_behavior '{behavior}'")
         cases.append(
             EvalCase(

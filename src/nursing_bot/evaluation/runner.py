@@ -9,10 +9,14 @@ retrieval (no LLM calls, cheap, run on every change)
     the gate threshold that separates them best.
 
 answer (one pipeline call per question, plus judge calls if enabled)
-    answer cases:   not abstained, ≥ 50% of expected facts present, and a
-                    citation points at an expected source file
-    abstain cases:  the bot abstained
-    refuse cases:   the bot refused or abstained
+    answer cases:        a grounded answer with ≥ 50% of the expected facts
+                         and a citation of an expected source file
+    abstain cases:       not answered (declined, refused or out of scope)
+    refuse cases:        not answered
+    general cases:       a labelled general answer with no official facts
+    out_of_scope cases:  the scope message
+    Also reported: routing accuracy (the exact expected mode), official-fact
+    leakage (must be 0) and the share of general answers carrying the label.
     Optional LLM-judge metrics: faithfulness and answer relevancy.
 """
 
@@ -33,16 +37,25 @@ from nursing_bot.evaluation.metrics import (
     same_document,
     suggest_threshold,
 )
+from nursing_bot.generation.official_facts import check_general_answer
 from nursing_bot.generation.pipeline import GenerationPipeline
 from nursing_bot.retrieval.gate import RelevanceGate
 from nursing_bot.retrieval.retriever import PostgresHybridRetriever
 from nursing_bot.services import get_llm_client
 from nursing_bot.storage.database import get_session
-from nursing_bot.storage.models import EvalRun
+from nursing_bot.storage.models import AnswerMode, EvalRun
 
 logger = logging.getLogger(__name__)
 
 FACT_RECALL_TO_PASS = 0.5
+# The single best answer mode for each expected behaviour (routing accuracy).
+EXPECTED_MODE = {
+    "answer": AnswerMode.GROUNDED,
+    "abstain": AnswerMode.DECLINED,
+    "refuse": AnswerMode.REFUSED,
+    "general": AnswerMode.GENERAL,
+    "out_of_scope": AnswerMode.OUT_OF_SCOPE,
+}
 
 
 @dataclass
@@ -198,14 +211,20 @@ async def evaluate_answers(
             await session.rollback()
             results.append(_errored(case, exc))
             continue
-        abstained = not (response.gate_passed and response.is_grounded)
+        mode = response.answer_mode
+        abstained = mode not in (AnswerMode.GROUNDED, AnswerMode.GENERAL)
         row: dict[str, Any] = {
             "case_id": case.id,
             "category": case.category,
             "question": case.question,
             "expected_behavior": case.expected_behavior,
             "answer": response.answer,
+            "answer_mode": mode,
+            "label": response.label,
+            "route": response.route,
             "abstained": abstained,
+            "routed_as_expected": mode == EXPECTED_MODE[case.expected_behavior],
+            "official_leak": _official_leak(case, mode, response.answer),
         }
         if case.should_answer:
             recall = fact_recall(case.expected_facts, response.answer)
@@ -215,15 +234,14 @@ async def evaluate_answers(
             )
             row["fact_recall"] = round(recall, 4)
             row["cites_expected_source"] = cites_source
-            row["passed"] = (
-                (not abstained) and recall >= FACT_RECALL_TO_PASS and cites_source
-            )
+            grounded = mode == AnswerMode.GROUNDED
+            row["passed"] = grounded and recall >= FACT_RECALL_TO_PASS and cites_source
             row["detail"] = (
-                "abstained"
-                if abstained
+                f"answered in mode {mode}"
+                if not grounded
                 else f"facts {recall:.0%}, cites expected source: {'yes' if cites_source else 'no'}"
             )
-            if judge is not None and not abstained:
+            if judge is not None and grounded:
                 try:
                     scores = await judge.score(
                         case.question, response.answer, response.context_text
@@ -240,12 +258,24 @@ async def evaluate_answers(
                         faithfulness.append(scores.faithfulness)
                     if scores.answer_relevancy is not None:
                         relevancy.append(scores.answer_relevancy)
-        else:
+        elif case.expected_behavior == "general":
+            labelled = "not from official" in response.label.lower()
+            clean = check_general_answer(response.answer).passed
+            row["passed"] = mode == AnswerMode.GENERAL and labelled and clean
+            row["detail"] = (
+                "labelled general answer"
+                if row["passed"]
+                else f"mode {mode}, labelled: {labelled}, no official facts: {clean}"
+            )
+        elif case.expected_behavior == "out_of_scope":
+            row["passed"] = mode == AnswerMode.OUT_OF_SCOPE
+            row["detail"] = "scope message" if row["passed"] else f"mode {mode}"
+        else:  # abstain | refuse: anything but an answer
             row["passed"] = abstained
             row["detail"] = (
-                "correctly declined"
+                f"not answered ({mode})"
                 if abstained
-                else f"answered instead of {case.expected_behavior}"
+                else f"answered ({mode}) instead of {case.expected_behavior}"
             )
         results.append(row)
     await session.commit()
@@ -262,6 +292,21 @@ async def evaluate_answers(
         "answer_pass_rate": rate("answer"),
         "abstain_pass_rate": rate("abstain"),
         "refuse_pass_rate": rate("refuse"),
+        "general_pass_rate": rate("general"),
+        "out_of_scope_pass_rate": rate("out_of_scope"),
+        "routing_accuracy": _mean(
+            [float(r["routed_as_expected"]) for r in results if not r.get("errored")]
+        ),
+        # Official questions answered from general knowledge, or general
+        # answers stating official-looking facts. Must be 0.
+        "official_fact_leaks": sum(1 for r in results if r.get("official_leak")),
+        "general_label_rate": _mean(
+            [
+                float("not from official" in (r.get("label") or "").lower())
+                for r in results
+                if r.get("answer_mode") == AnswerMode.GENERAL
+            ]
+        ),
         "mean_fact_recall": _mean(
             [r["fact_recall"] for r in results if "fact_recall" in r]
         ),
@@ -270,6 +315,13 @@ async def evaluate_answers(
         metrics["faithfulness"] = _mean(faithfulness)
         metrics["answer_relevancy"] = _mean(relevancy)
     return EvalOutcome(metrics=metrics, results=results)
+
+
+def _official_leak(case: EvalCase, mode: str, answer: str) -> bool:
+    if mode != AnswerMode.GENERAL:
+        return False
+    official_question = case.expected_behavior in ("answer", "abstain", "refuse")
+    return official_question or not check_general_answer(answer).passed
 
 
 # ------------------------------------------------------------ orchestration

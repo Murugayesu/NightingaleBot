@@ -63,17 +63,16 @@ async def test_grounded_answer_with_citation():
     assert response.tokens_used > 0
 
 
-async def test_low_similarity_abstains_without_calling_llm():
+async def test_uncovered_official_question_is_declined_without_calling_llm():
     llm = FakeLLMClient()
     pipeline, _ = _pipeline(llm, similarity=0.1)
     response = await pipeline.aquery(
-        session=FakeSession(), query="What is the weather in Chennai?"
+        session=FakeSession(), query="What is the stipend for GNM students in Chennai?"
     )  # type: ignore[arg-type]
-    assert (
-        not response.gate_passed
-        and response.answer == get_settings().abstention_message
-    )
-    assert llm.prompts == []
+    assert not response.gate_passed and response.answer_mode == "declined"
+    assert response.answer == get_settings().abstention_message
+    assert response.route == "official_specific"
+    assert llm.prompts == [], "the routing rules decide; no LLM call"
 
 
 async def test_injection_is_refused_before_retrieval():
@@ -128,9 +127,11 @@ async def test_stream_end_event_retracts_unverified_answer():
         e async for e in pipeline.astream_query(session=FakeSession(), query="fee?")
     ]  # type: ignore[arg-type]
     kinds = [e["type"] for e in events]
-    assert kinds[0] == "citations" and kinds[-1] == "end" and "token" in kinds
+    assert kinds[:2] == ["mode", "citations"] and kinds[-1] == "end"
+    # The unverified text was streamed, then withdrawn with a reset event.
+    assert kinds.index("token") < kinds.index("reset")
     end = events[-1]
-    assert end["is_grounded"] is False
+    assert end["is_grounded"] is False and end["answer_mode"] == "declined"
     assert end["final_answer"] == get_settings().abstention_message
     assert end["citations"] == []
 
@@ -151,8 +152,9 @@ async def test_stream_abstention_has_no_citation_event():
     events = [
         e async for e in pipeline.astream_query(session=FakeSession(), query="weather?")
     ]  # type: ignore[arg-type]
-    assert [e["type"] for e in events] == ["token", "end"]
+    assert [e["type"] for e in events] == ["mode", "token", "end"]
     assert events[-1]["gate_passed"] is False
+    assert events[-1]["answer_mode"] == "declined", "unclassifiable means declined"
 
 
 async def test_meter_tracks_tokens_during_and_after_streaming():

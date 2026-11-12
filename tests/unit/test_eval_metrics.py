@@ -15,9 +15,9 @@ EVALSET = Path(__file__).resolve().parents[2] / "eval" / "evalset.csv"
 
 def test_real_evalset_loads():
     cases = load_cases(EVALSET)
-    assert len(cases) == 57
+    assert len(cases) == 77
     behaviours = {c.expected_behavior for c in cases}
-    assert behaviours == {"answer", "abstain", "refuse"}
+    assert behaviours == {"answer", "abstain", "refuse", "general", "out_of_scope"}
     multi = [c for c in cases if len(c.source_files) > 1]
     assert multi, "cases citing two documents are split on '+'"
     assert all(c.expected_facts for c in cases if c.should_answer)

@@ -6,6 +6,7 @@ get similar vectors. That makes retrieval tests behave like the real thing
 """
 
 import hashlib
+import json
 import math
 import re
 from collections.abc import AsyncIterator, Callable
@@ -162,6 +163,35 @@ def cited_answer_from_prompt(prompt: str, system_prompt: str | None = None) -> s
     q_words = set(_WORD.findall(question.lower())) - _STOP
     best = max(sentences, key=lambda s: len(q_words & set(_WORD.findall(s.lower()))))
     return f"{best.rstrip('.')} [Source 1]."
+
+
+OFF_TOPIC_WORDS = {"biryani", "recipe", "cricket", "movie", "python", "election"}
+
+
+def route_for(question: str) -> str:
+    """The fake classifier: off-topic words, nursing concepts, else official."""
+    words = set(_WORD.findall(question.lower()))
+    if words & OFF_TOPIC_WORDS:
+        return "out_of_scope"
+    if words & {"explain", "define", "what", "describe", "why"}:
+        return "general_nursing"
+    return "official_specific"
+
+
+def smart_fake_answer(prompt: str, system_prompt: str | None = None) -> str:
+    """A fake model that plays every role the app asks of it."""
+    system = system_prompt or ""
+    if system.startswith("You route questions"):
+        question = json.loads(prompt)["question"]
+        return json.dumps({"category": route_for(question)})
+    if system.startswith("Write a short title"):
+        return "Nursing registration question"
+    if "running summary" in system:
+        return "The user asked about nurse registration."
+    if system.startswith("You are an educational nursing assistant"):
+        question = prompt.split("Question:", 1)[-1].split("\n", 1)[0].strip()
+        return f"In general nursing practice, {question.rstrip('?').lower()} is explained in textbooks."
+    return cited_answer_from_prompt(prompt, system_prompt)
 
 
 class FakeSession:
