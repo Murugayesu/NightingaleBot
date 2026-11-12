@@ -1,7 +1,8 @@
 """Authentication and rate limiting.
 
-* Admin endpoints: a shared secret in the X-Admin-API-Key header.
-* Chat endpoints: an anonymous session token issued by POST /chat/session.
+* Admin endpoints: a signed-in admin account (see api/auth.py) or, for
+  automation, a shared secret in the X-Admin-API-Key header.
+* Guest chat: an anonymous session token issued by POST /chat/session.
   The token is "<session_id>.<expiry>.<HMAC signature>": the server can verify
   it without a lookup, and nobody can forge one without SESSION_SECRET.
 * Rate limits: per client IP. X-Forwarded-For is only believed when the
@@ -16,7 +17,7 @@ import secrets
 import time
 from functools import lru_cache
 
-from fastapi import Header, HTTPException, Request, status
+from fastapi import Request
 from slowapi import Limiter
 
 from nursing_bot.config import get_settings
@@ -75,16 +76,6 @@ def admin_key_valid(presented: str | None) -> bool:
     if not configured or not presented:
         return False
     return secrets.compare_digest(presented.encode(), configured.encode())
-
-
-async def verify_admin_key(
-    x_admin_api_key: str | None = Header(None, alias="X-Admin-API-Key"),
-) -> None:
-    if not admin_key_valid(x_admin_api_key):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing X-Admin-API-Key header.",
-        )
 
 
 # -------------------------------------------------------------- chat sessions

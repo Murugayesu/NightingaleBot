@@ -1,10 +1,13 @@
 """Command-line tools:  python -m nursing_bot.cli <command> --help
 
-migrate        apply database migrations + create the job-queue schema
-ingest-dir     bulk-load a folder of documents (dedupes by content hash)
-eval           run the evaluation set; non-zero exit when below thresholds (CI gate)
-purge-history  delete chat history older than CHAT_HISTORY_RETENTION_DAYS
-gen-secrets    print fresh random values for the secret settings
+migrate         apply database migrations + create the job-queue schema
+ingest-dir      bulk-load a folder of documents (dedupes by content hash)
+eval            run the evaluation set; non-zero exit when below thresholds (CI gate)
+create-user     create an account (use --admin for the first administrator)
+reset-password  give a user a one-time temporary password (no e-mail needed)
+set-role        make an account an admin, or a normal user again
+purge-history   delete data past its retention period
+gen-secrets     print fresh random values for the secret settings
 """
 
 import argparse
@@ -186,6 +189,10 @@ async def _eval(args: argparse.Namespace) -> int:
         for name, minimum in gates.items()
         if minimum is not None and (metrics.get(name) or 0.0) < minimum
     ]
+    # Never acceptable, whatever the thresholds: an official question answered
+    # from general knowledge, or a general answer stating official facts.
+    if (metrics.get("official_fact_leaks") or 0) > 0:
+        failed_gates.append(f"official_fact_leaks {metrics['official_fact_leaks']} > 0")
     if failed_gates:
         print("\nEVAL GATE FAILED: " + "; ".join(failed_gates), file=sys.stderr)
         return 1
@@ -214,7 +221,114 @@ def cmd_purge_history(args: argparse.Namespace) -> int:
             await dispose_engine()
 
     deleted = asyncio.run(purge())
-    print(f"Deleted {deleted} expired chat sessions.")
+    print(f"Deleted {deleted} expired guest chat sessions.")
+
+    async def purge_accounts() -> dict[str, int]:
+        from nursing_bot.jobs import purge_expired_account_data
+        from nursing_bot.storage.database import dispose_engine
+
+        try:
+            return await purge_expired_account_data()
+        finally:
+            await dispose_engine()
+
+    counts = asyncio.run(purge_accounts())
+    print(
+        f"Deleted {counts['auth_sessions']} ended sign-in sessions, "
+        f"{counts['usage_days']} old usage counters and "
+        f"{counts['conversations']} expired conversations."
+    )
+    return 0
+
+
+# ----------------------------------------------------------------- accounts
+async def _with_db(action: Any) -> Any:
+    from nursing_bot.storage.database import dispose_engine, get_session
+
+    try:
+        async with get_session() as db:
+            return await action(db)
+    finally:
+        await dispose_engine()
+
+
+def _account_error(exc: Exception) -> int:
+    print(f"Error: {exc}", file=sys.stderr)
+    return 1
+
+
+def cmd_create_user(args: argparse.Namespace) -> int:
+    """Create an account with a one-time temporary password.
+
+    The password is printed once; the user must replace it at first sign-in.
+    """
+    from nursing_bot.accounts import service
+    from nursing_bot.accounts.errors import AccountError
+
+    temporary = service.generate_temporary_password()
+
+    async def create(db: Any) -> Any:
+        return await service.create_user(
+            db,
+            args.email,
+            temporary,
+            display_name=args.name,
+            role="admin" if args.admin else "user",
+            must_change_password=True,
+            privacy_accepted=False,
+            enforce_policy=False,
+        )
+
+    try:
+        user = asyncio.run(_with_db(create))
+    except AccountError as exc:
+        return _account_error(exc)
+    print(f"Created {'admin' if args.admin else 'user'} account {user.email}.")
+    print(f"Temporary password (shown once): {temporary}")
+    print("They must choose a new password when they first sign in.")
+    return 0
+
+
+async def _user_id(db: Any, email: str) -> uuid.UUID:
+    from nursing_bot.accounts import service
+    from nursing_bot.accounts.errors import UserNotFoundError
+
+    user = await service.find_user_by_email(db, service.normalize_email(email))
+    if user is None:
+        raise UserNotFoundError(f"No account with the e-mail {email}.")
+    return user.id
+
+
+def cmd_reset_password(args: argparse.Namespace) -> int:
+    """Admin-assisted reset: there is no e-mail server to send a link."""
+    from nursing_bot.accounts import service
+    from nursing_bot.accounts.errors import AccountError
+
+    async def reset(db: Any) -> Any:
+        return await service.admin_reset_password(db, await _user_id(db, args.email))
+
+    try:
+        temporary = asyncio.run(_with_db(reset))
+    except AccountError as exc:
+        return _account_error(exc)
+    print(f"Password reset for {temporary.email}; all their sessions were signed out.")
+    print(f"Temporary password (shown once): {temporary.password}")
+    print("Give it to them privately. They must choose a new one at sign-in.")
+    return 0
+
+
+def cmd_set_role(args: argparse.Namespace) -> int:
+    from nursing_bot.accounts import service
+    from nursing_bot.accounts.errors import AccountError
+
+    async def set_role(db: Any) -> Any:
+        return await service.set_role(db, await _user_id(db, args.email), args.role)
+
+    try:
+        user = asyncio.run(_with_db(set_role))
+    except AccountError as exc:
+        return _account_error(exc)
+    print(f"{user.email} is now a {user.role}.")
     return 0
 
 
@@ -274,7 +388,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.set_defaults(func=cmd_eval)
 
-    p = sub.add_parser("purge-history", help="delete chat history past retention")
+    p = sub.add_parser("create-user", help="create an account (temporary password)")
+    p.add_argument("email")
+    p.add_argument("--name", help="display name")
+    p.add_argument("--admin", action="store_true", help="give it the admin role")
+    p.set_defaults(func=cmd_create_user)
+
+    p = sub.add_parser("reset-password", help="issue a one-time temporary password")
+    p.add_argument("email")
+    p.set_defaults(func=cmd_reset_password)
+
+    p = sub.add_parser("set-role", help="change an account's role")
+    p.add_argument("email")
+    p.add_argument("role", choices=["user", "admin"])
+    p.set_defaults(func=cmd_set_role)
+
+    p = sub.add_parser("purge-history", help="delete data past its retention period")
     p.set_defaults(func=cmd_purge_history)
 
     p = sub.add_parser("gen-secrets", help="print random secrets for .env")

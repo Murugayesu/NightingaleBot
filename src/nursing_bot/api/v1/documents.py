@@ -23,13 +23,13 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from nursing_bot.api.auth import require_admin
 from nursing_bot.api.dependencies import get_db, get_storage_dep
 from nursing_bot.api.schemas import (
     ChunkResponse,
     DocumentListResponse,
     DocumentResponse,
 )
-from nursing_bot.api.security import verify_admin_key
 from nursing_bot.config import get_settings
 from nursing_bot.ingestion.loaders import (
     TABULAR_SUFFIXES,
@@ -41,7 +41,7 @@ from nursing_bot.storage.models import Chunk, Document, DocumentStatus
 from nursing_bot.storage.object_store import S3Backend
 
 router = APIRouter(
-    prefix="/documents", tags=["Documents"], dependencies=[Depends(verify_admin_key)]
+    prefix="/documents", tags=["Documents"], dependencies=[Depends(require_admin)]
 )
 logger = logging.getLogger(__name__)
 

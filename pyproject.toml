@@ -27,6 +27,7 @@ dependencies = [
     "openinference-instrumentation-litellm==0.1.45",
     "opentelemetry-instrumentation-fastapi==0.66b2",
     "opentelemetry-instrumentation-sqlalchemy==0.66b2",
+    "argon2-cffi==25.1.0",
 ]
 
 [project.optional-dependencies]
