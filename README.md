@@ -1,23 +1,39 @@
 # NursingBot
 
-A question-answering assistant for the **Tamil Nadu Nurses and Midwives Council (TNNMC)**.
-It answers only from official council documents, cites every fact, and says so
-when the documents don't contain the answer.
+A standalone chatbot for nurses, nursing students and applicants in Tamil Nadu.
+It answers from the official documents of the **Tamil Nadu Nurses and Midwives Council (TNNMC)**
+with citations, answers general nursing questions from general knowledge with a clear label, and
+never invents official facts.
 
 ```
- council website ──► chat widget (iframe) ─┐
- admin panel ──────────────────────────────┼──► Caddy (TLS) ──► FastAPI ──► PostgreSQL + pgvector
-                                           │                       │  └─────► MinIO / S3 (raw files)
-                                           │                       └─ jobs ─► Procrastinate worker
-                                           │                    traces ─────► OTel Collector ──► Phoenix
+ browser ──► http://<server IP>  (HTTPS once a domain exists)
+               │
+             Caddy ─┬─ /        React app (static files)
+                    └─ /api/*  FastAPI ──► PostgreSQL + pgvector (documents, chunks, users, chats)
+                                  │   └──► MinIO / S3 (original files)
+                                  └ jobs ► Procrastinate worker (ingestion, evaluation)
+                         traces ────────► OTel Collector ──► Phoenix
 ```
 
-- **Ingestion:** upload → parse (PDF, DOCX, TXT, Markdown, CSV, TSV, XLSX, JSON) → chunk → context headers → embed → index (HNSW + full text).
-- **Answering:** guardrails → follow-up rewriting → hybrid search (vectors + keywords, RRF) → optional rerank → relevance gate → cited answer → citation check.
-- **Evaluation:** 57 hand-verified questions (`eval/evalset.csv`): retrieval hit rate, answer checks, and LLM-judge faithfulness and relevancy.
+**Every answer says how it was produced:**
 
-Read `docs/architecture.md` for how it fits together and `docs/operations.md` to run it in production.
-The HTTP API is specified in `docs/api-contract.md`.
+| Badge | When | What the user sees |
+|---|---|---|
+| From official records | The council's documents answer the question | A cited answer; the sources open with page and excerpt |
+| General nursing knowledge | A general nursing question the documents don't cover | A labelled general answer: no fees, dates, contacts or rules |
+| Not in the official records | An official question the documents can't answer | A clear "not found" with the council's contact link |
+| Safety notice | Personal medical questions and emergencies | Advice to see a doctor; 108 in an emergency |
+| Outside my scope | Anything not about nursing | A polite scope message |
+
+**Two ways to use it:**
+- **Guests** chat at once. Their chats stay in their browser.
+- **Signed-in users** (e-mail + password) get their chats saved on the server, searchable, and available on any device. Guest chats can be brought along at sign-up.
+
+**Admins** (an account with the admin role) upload documents, run evaluations, review anonymised
+feedback and manage accounts, including resetting forgotten passwords. There is no e-mail server.
+
+Read `docs/architecture.md` for how it fits together, `docs/operations.md` to run it, and
+`docs/api-contract.md` for the HTTP API.
 
 ---
 
@@ -26,54 +42,60 @@ The HTTP API is specified in `docs/api-contract.md`.
 ```bash
 cp .env.example .env
 docker compose run --rm --no-deps migrate python -m nursing_bot.cli gen-secrets   # paste into .env
-# also set LLM_API_KEY (and EMBEDDING_API_KEY if different) in .env
+# set LLM_API_KEY (and EMBEDDING_API_KEY if different); pin LLM_MODEL to one model
 docker compose up -d --build
+docker compose exec api python -m nursing_bot.cli create-user you@example.org --admin
 ```
 
-| URL | What |
-|---|---|
-| http://localhost/ui/widget/chat.html | Chat widget |
-| http://localhost/ui/admin/ | Admin panel (log in with `ADMIN_API_KEY`) |
-| http://localhost:6006 | Phoenix traces (bound to localhost only) |
-
-Load the council documents in bulk:
+The last command prints a one-time password. Open **http://localhost** (or `http://<server IP>`),
+sign in with it, choose your own password, then upload documents under **Admin → Documents**.
+For a folder of documents:
 
 ```bash
 docker compose run --rm -v "$PWD/../corpus:/corpus:ro" migrate \
   python -m nursing_bot.cli ingest-dir /corpus --recursive
 ```
 
-Embed the widget in any web page (add the page's origin to `WIDGET_FRAME_ANCESTORS`):
+Phoenix traces: http://localhost:6006 (bound to the server itself; use an SSH tunnel).
 
-```html
-<script src="https://YOUR-DOMAIN/ui/widget/embed.js" async></script>
-```
+Without a domain the app runs over plain HTTP: fine on a trusted network, and the sign-in pages
+warn about it otherwise. Adding a domain later: set `SITE_ADDRESS=<domain>` and
+`AUTH_COOKIE_SECURE=true`, then `docker compose up -d`.
 
-## Local development (without Docker for the app)
+## Local development
 
 ```bash
 uv sync --extra dev --extra parsers
-docker compose up -d postgres minio minio-init         # infrastructure only
+docker compose up -d postgres minio minio-init            # infrastructure only
 uv run python -m nursing_bot.cli migrate
-uv run uvicorn nursing_bot.api.main:app --reload        # INGESTION_MODE=inline: no worker needed
+uv run uvicorn nursing_bot.api.main:app --reload           # API on :8000 (INGESTION_MODE=inline)
+
+cd frontend && npm ci && npm run dev                       # app on http://localhost:5173
 ```
+
+Vite proxies `/api` to `:8000`, so the browser sees one origin, as behind Caddy.
 
 ## Quality checks
 
 ```bash
-uv run ruff check src tests alembic && uv run ruff format --check src tests alembic
-uv run mypy
-# integration tests need a disposable pgvector database (it is wiped!):
+# Python: lint, types, unit + integration tests (needs a disposable pgvector database; it is wiped!)
 docker run -d --name nursingbot-test-pg -e POSTGRES_PASSWORD=testpass -e POSTGRES_DB=nursing_bot_test \
   -p 127.0.0.1:55432:5432 pgvector/pgvector:0.8.7-pg18-trixie
+uv run ruff check src tests alembic && uv run ruff format --check src tests alembic
+uv run mypy
 uv run pytest --cov
+
+# Frontend: lint, types, unit tests, build, browser end-to-end tests
+cd frontend
+npm run lint && npm run typecheck && npm test && npm run build
+npx playwright install chromium && npm run e2e   # starts the API with fake AI providers
 ```
 
-Evaluation (after ingesting the corpus):
+Evaluation against the real models (after loading the corpus):
 
 ```bash
-uv run python -m nursing_bot.cli eval retrieval            # free: hit rate + suggested gate threshold
-uv run python -m nursing_bot.cli eval answer --judge       # LLM cost: answers + faithfulness
+uv run python -m nursing_bot.cli eval retrieval        # free: hit rate + suggested gate threshold
+uv run python -m nursing_bot.cli eval answer --judge   # costs tokens: answers, routing, leaks
 ```
 
 ## Project layout
@@ -81,21 +103,21 @@ uv run python -m nursing_bot.cli eval answer --judge       # LLM cost: answers +
 ```
 src/nursing_bot/
   config.py           every setting, with production safety checks
-  privacy.py          PII redaction (shared by guardrails, history, tracing)
-  services.py         LLM client + object storage singletons
-  jobs.py             background jobs (ingest, eval, retention) and dispatch
-  cli.py              migrate | ingest-dir | eval | gen-secrets
-  api/                FastAPI app, routes, auth, schemas
-  ingestion/          loaders, splitter, context headers, tabular cards, pipeline
+  privacy.py          PII redaction (guardrails, history, tracing)
+  usage.py            daily token quotas and the global spending cap
+  accounts/           Argon2id passwords, cookie sessions, admin-assisted resets
+  api/                FastAPI app, auth and CSRF, routes (accounts, conversations, guest chat, admin)
+  generation/         guardrails, condenser, answer router, official-facts check, verifier, pipeline
   retrieval/          dense, sparse, fusion, rerank, gate, retriever
-  generation/         guardrails, condenser, assembler, verifier, pipeline
+  ingestion/          loaders, splitter, context headers, tabular cards, pipeline
   evaluation/         dataset, metrics, LLM judge, runner
   models/             LiteLLM client (the only module that calls AI providers)
   storage/            ORM models, database, S3
   observability/      logging, OpenTelemetry → Phoenix
   workers/            Procrastinate tasks
-  web/                chat widget + admin panel (plain HTML/CSS/JS)
+  jobs.py, cli.py     background jobs; migrate | ingest-dir | eval | create-user | reset-password ...
+frontend/             React + Vite + TypeScript app (chat, accounts, settings, admin), Playwright e2e
 alembic/              database migrations
-eval/                 evaluation set
+eval/                 evaluation set (77 cases)
 scripts/              backup, restore, restore test, eval gate
 ```
