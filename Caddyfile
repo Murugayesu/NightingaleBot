@@ -15,12 +15,10 @@
 }
 
 # SITE_ADDRESS decides whether TLS is on:
-#   ":80"                  plain HTTP (local dev, or behind an external TLS terminator)
-#   "nursing.example.org"  Caddy obtains and renews a certificate automatically
+#   ":80"                  plain HTTP: the server's IP address or localhost (today)
+#   "nursing.example.org"  Caddy obtains and renews a certificate automatically;
+#                          then also set AUTH_COOKIE_SECURE=true in .env
 {$SITE_ADDRESS::80} {
-	# Content-Security-Policy and X-Frame-Options are set by the application,
-	# per path: the chat widget page must be frameable by the council's site,
-	# the admin panel and API must not be. Caddy must not overwrite them.
 	header {
 		-Server
 		Permissions-Policy "geolocation=(), camera=(), microphone=()"
@@ -43,16 +41,49 @@
 		max_size 1MB
 	}
 
-	reverse_proxy api:8000 {
-		# Overwrite, never append. {client_ip} is the real client: the socket
-		# address, or the forwarded address when the request came through a
-		# trusted proxy above. The app believes this header only because it
-		# arrives from a private network (TRUSTED_PROXY_NETWORKS), i.e. Caddy.
-		header_up X-Forwarded-For {client_ip}
-		header_up X-Forwarded-Proto {scheme}
+	# ------------------------------------------------------------ the API
+	# The API sets its own security headers (CSP, X-Frame-Options); they are
+	# left untouched here.
+	@api path /api/* /health /docs /docs/* /openapi.json
+	handle @api {
+		reverse_proxy api:8000 {
+			# Overwrite, never append. {client_ip} is the real client: the socket
+			# address, or the forwarded address when the request came through a
+			# trusted proxy above. The app believes this header only because it
+			# arrives from a private network (TRUSTED_PROXY_NETWORKS), i.e. Caddy.
+			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Proto {scheme}
 
-		# Deliver SSE tokens immediately instead of buffering the whole answer.
-		flush_interval -1
+			# Deliver SSE tokens immediately instead of buffering the whole answer.
+			flush_interval -1
+		}
+	}
+
+	# ------------------------------------------------------- the web app
+	handle {
+		root * /srv
+
+		# One strict policy for the whole app: only its own scripts, styles,
+		# images and API; never framed by another site.
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+			X-Frame-Options DENY
+			X-Content-Type-Options nosniff
+			Referrer-Policy strict-origin-when-cross-origin
+		}
+
+		# Build output in /assets has content hashes in its names: cache it for
+		# a year. Everything else (index.html) must be revalidated, so a new
+		# release reaches browsers at once.
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		@other not path /assets/*
+		header @other Cache-Control "no-cache"
+
+		# Client-side routes (/c/<id>, /settings, /admin ...) all load the app.
+		try_files {path} /index.html
+		encode zstd gzip
+		file_server
 	}
 
 	log {

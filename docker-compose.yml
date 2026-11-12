@@ -8,9 +8,14 @@
 #
 # All secrets come from .env (see .env.example) or Docker secrets.
 # Generate them with:  docker compose run --rm --no-deps migrate python -m nursing_bot.cli gen-secrets
+#
+# Images are tagged with APP_VERSION (default below). Build a new release
+# under a new tag and the previous images stay available for a rollback:
+#   APP_VERSION=2.0.1 docker compose up -d --build     upgrade
+#   APP_VERSION=2.0.0 docker compose up -d             roll back (no build)
 
 x-app: &app
-  image: nursingbot-app:1.0.0
+  image: nursingbot-app:${APP_VERSION:-2.0.0}
   env_file: ${APP_ENV_FILE:-.env}
   environment: &app-env
     # This file is the production stack: the API refuses to start with default
@@ -71,6 +76,7 @@ services:
       - --ignore-existing
       - local/${S3_BUCKET_NAME:-nursing-documents}
       - local/${BACKUP_BUCKET_NAME:-nursing-backups}
+      - local/${DOCUMENTS_BACKUP_BUCKET_NAME:-nursing-documents-backup}
     depends_on:
       minio:
         condition: service_healthy
@@ -183,8 +189,27 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # Uploaded documents (the originals) are copied the same way. No --remove:
+  # a document deleted by mistake can still be recovered from the copy.
+  # Create the bucket DOCUMENTS_BACKUP_BUCKET_NAME on the target first when
+  # BACKUP_TARGET_URL points off the VM.
+  documents-sync:
+    image: cgr.dev/chainguard/minio-client:latest
+    environment:
+      MC_HOST_local: http://${S3_ACCESS_KEY_ID:-minioadmin}:${S3_SECRET_ACCESS_KEY}@minio:9000
+      MC_HOST_target: ${BACKUP_TARGET_URL:-http://${S3_ACCESS_KEY_ID:-minioadmin}:${S3_SECRET_ACCESS_KEY}@minio:9000}
+    command: ["mirror", "--watch", "--overwrite", "local/${S3_BUCKET_NAME:-nursing-documents}", "target/${DOCUMENTS_BACKUP_BUCKET_NAME:-nursing-documents-backup}"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # The edge: serves the React app and proxies /api to the API.
   caddy:
-    image: caddy:2.11.7-alpine
+    image: nursingbot-web:${APP_VERSION:-2.0.0}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
       - "80:80"
       - "443:443"

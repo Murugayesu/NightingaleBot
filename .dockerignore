@@ -17,3 +17,7 @@ backups/
 corpus/
 docs/
 tests/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
