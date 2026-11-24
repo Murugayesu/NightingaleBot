@@ -2,6 +2,15 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 const pretty = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+const uuid = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+  const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+});
+const copyText = async text => {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch {}
+  }
+  const input = document.createElement('textarea'); input.value = text; document.body.appendChild(input); input.select(); document.execCommand('copy'); document.body.removeChild(input);
+};
 const state = { view:'chat', logs:[], docPage:1, docTotal:0, selectedDoc:null, chunkOffset:0, chunkCount:0, chatAbort:null, uploadWatch:null, endpoints:[], healthBusy:false, sessionToken:localStorage.getItem('nursingbot-local-token')||null };
 let toastTimer;
 
@@ -26,7 +35,7 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => $('#toast').classList.add('hidden'), error ? 9000 : 4500);
 }
 function logRequest(record) {
-  record.id = crypto.randomUUID(); record.time = new Date().toLocaleTimeString();
+  record.id = uuid(); record.time = new Date().toLocaleTimeString();
   state.logs.unshift(record); state.logs = state.logs.slice(0, 100); $('#log-count').textContent = state.logs.length;
   $('#log-list').innerHTML = state.logs.map(item => `<button class="log-row" data-log="${item.id}"><b>${escape(item.method)}</b>${escape(item.path)}<span class="log-status">${escape(item.status)}</span><small>${item.time} · ${Math.round(item.duration)} ms</small></button>`).join('');
 }
@@ -161,7 +170,7 @@ $('#chat-form').addEventListener('submit', async event => {
   const query=$('#chat-input').value.trim(); if (!query) return;
   let filters; try { filters=objectValue('#chat-filters'); } catch(error) {toast(error.message,true); return;}
   await ensureSession();
-  const sessionId=$('#session-id').value.trim() || crypto.randomUUID(); updateSession(sessionId);
+  const sessionId=$('#session-id').value.trim() || uuid(); updateSession(sessionId);
   addMessage('user',query); const assistant=addMessage('assistant','Searching sources and validating the answer'); $('.message-text',assistant).classList.add('thinking');
   const payload={query,session_id:sessionId,filters,stream:$('#stream-mode').checked};
   state.chatAbort=new AbortController(); $('#send-chat').disabled=true; $('#cancel-chat').classList.remove('hidden'); $('#chat-status').textContent='Waiting for the Docker backend…'; $('#chat-input').value='';
@@ -186,7 +195,7 @@ $('#new-chat').addEventListener('click', async () => {
   await ensureSession();
   $('#chat-input').focus();
 });
-$('#copy-session').addEventListener('click',()=>run(async()=>{if(!$('#session-id').value) throw new Error('There is no session ID yet.');await navigator.clipboard.writeText($('#session-id').value);toast('Session ID copied.');}));
+$('#copy-session').addEventListener('click',()=>run(async()=>{if(!$('#session-id').value) throw new Error('There is no session ID yet.');await copyText($('#session-id').value);toast('Session ID copied.');}));
 $('#load-conversation').addEventListener('click',event=>run(async()=>{
   if(state.chatAbort) throw new Error('Stop the current request first.');
   const id=$('#session-id').value.trim(); if(!id) throw new Error('Enter a session ID first.');
