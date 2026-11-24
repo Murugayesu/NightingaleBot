@@ -204,12 +204,12 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # The edge: serves the React app and proxies /api to the API.
+  # The edge: serves the local-ui workspace and proxies /api to the API.
   caddy:
     image: nursingbot-web:${APP_VERSION:-2.0.0}
     build:
       context: .
-      dockerfile: frontend/Dockerfile
+      dockerfile: local-ui/Dockerfile
     ports:
       - "80:80"
       - "443:443"
@@ -221,6 +221,7 @@ services:
       CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-127.0.0.1/32}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./local-ui:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

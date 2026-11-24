@@ -1,0 +1,62 @@
+{
+  "services": {
+    "api": {
+      "environment": {
+        "LLM_MODEL": "openai/auto",
+        "EMBEDDING_MODEL": "openai/local-text-embedding-3",
+        "LLM_BASE_URL": "http://local-model-proxy:8088/v1",
+        "EMBEDDING_BASE_URL": "http://local-model-proxy:8088/v1"
+      },
+      "depends_on": {
+        "local-model-proxy": {
+          "condition": "service_started"
+        }
+      }
+    },
+    "worker": {
+      "environment": {
+        "LLM_MODEL": "openai/auto",
+        "EMBEDDING_MODEL": "openai/local-text-embedding-3",
+        "LLM_BASE_URL": "http://local-model-proxy:8088/v1",
+        "EMBEDDING_BASE_URL": "http://local-model-proxy:8088/v1"
+      },
+      "depends_on": {
+        "local-model-proxy": {
+          "condition": "service_started"
+        }
+      }
+    },
+    "local-model-proxy": {
+      "image": "nursingbot-app:latest",
+      "pull_policy": "never",
+      "command": [
+        "uvicorn",
+        "model_bridge:app",
+        "--app-dir",
+        "/local",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8088"
+      ],
+      "env_file": [
+        "C:\\Programming\\Projects\\STIC projects\\Nursing_bot\\.env"
+      ],
+      "environment": {
+        "UPSTREAM_CHAT_BASE_URL": "http://host.docker.internal:31415/v1",
+        "UPSTREAM_EMBEDDING_BASE_URL": "http://host.docker.internal:31415/v1",
+        "UPSTREAM_CHAT_MODEL": "auto",
+        "UPSTREAM_EMBEDDING_MODEL": "auto"
+      },
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "C:\\Programming\\Projects\\STIC projects\\Nursing_bot\\.artifacts\\local-ui\\model_bridge.py",
+          "target": "/local/model_bridge.py",
+          "read_only": true
+        }
+      ],
+      "restart": "unless-stopped"
+    }
+  }
+}

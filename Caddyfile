@@ -44,7 +44,7 @@
 	# ------------------------------------------------------------ the API
 	# The API sets its own security headers (CSP, X-Frame-Options); they are
 	# left untouched here.
-	@api path /api/* /health /docs /docs/* /openapi.json
+	@api path /api/* /health /docs /docs/* /openapi.json /local/*
 	handle @api {
 		reverse_proxy api:8000 {
 			# Overwrite, never append. {client_ip} is the real client: the socket
@@ -53,6 +53,7 @@
 			# arrives from a private network (TRUSTED_PROXY_NETWORKS), i.e. Caddy.
 			header_up X-Forwarded-For {client_ip}
 			header_up X-Forwarded-Proto {scheme}
+			header_up X-Admin-API-Key {$ADMIN_API_KEY:admin:admin@123}
 
 			# Deliver SSE tokens immediately instead of buffering the whole answer.
 			flush_interval -1

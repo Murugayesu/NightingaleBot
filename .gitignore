@@ -38,3 +38,7 @@ Thumbs.db
 
 # Docker secret files (see docs/operations.md)
 secrets/
+
+# Local UI runtime files
+local-ui/*.log
+local-ui/*.pid

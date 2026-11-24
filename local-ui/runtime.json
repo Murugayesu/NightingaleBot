@@ -1,0 +1,1 @@
+{"chatModel": "openai/auto", "embeddingModel": "openai/local-text-embedding-3", "mode": "Live local model proxy with compatibility adapter"}

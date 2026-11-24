@@ -21,7 +21,7 @@ from nursing_bot import __version__
 from nursing_bot.accounts.errors import AccountError, AccountLockedError
 from nursing_bot.api.auth import is_admin_request
 from nursing_bot.api.security import limiter
-from nursing_bot.api.v1 import v1_router
+from nursing_bot.api.v1 import api_router, v1_router
 from nursing_bot.config import get_settings
 from nursing_bot.observability import (
     configure_logging,
@@ -211,6 +211,15 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(v1_router)
+    app.include_router(api_router)
+
+    @app.get("/local/info", include_in_schema=False)
+    async def local_info() -> dict[str, Any]:
+        return {
+            "chatModel": settings.LLM_MODEL,
+            "embeddingModel": settings.EMBEDDING_MODEL,
+            "mode": settings.ENVIRONMENT,
+        }
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, str]:

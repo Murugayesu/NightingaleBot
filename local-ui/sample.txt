@@ -1,0 +1,8 @@
+Synthetic local testing guide
+
+This document exists only to check the local NursingBot upload and chat workflow.
+It is not an official nursing regulation or council publication.
+
+The local workspace verification code is CEDAR-417.
+When testing, upload this file, wait for its status to become active, and use the
+"Chat with this source" control to ask for the verification code.
