@@ -219,15 +219,15 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "openai/gpt-4o-mini"
     LLM_BASE_URL: str | None = None
     LLM_API_KEY: SecretStr | None = None
-    LLM_MAX_TOKENS: int = 1024  # cap on generated tokens per answer
-    LLM_TIMEOUT_SECONDS: float = 60.0
+    LLM_MAX_TOKENS: int = 2048  # cap on generated tokens per answer (gives room for reasoning + content)
+    LLM_TIMEOUT_SECONDS: float = 300.0  # 5 minutes: allows reasoning models to prefill and think
     LLM_MAX_RETRIES: int = 2
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
     EMBEDDING_BASE_URL: str | None = None
     EMBEDDING_API_KEY: SecretStr | None = None
     # Requested output size, for providers that support it (OpenAI text-embedding-3).
     EMBEDDING_DIMENSIONS: int | None = VECTOR_COLUMN_DIMENSIONS
-    EMBEDDING_BATCH_SIZE: int = 64
+    EMBEDDING_BATCH_SIZE: int = 32
     # Bulk ingestion waits out provider rate limits (5s, 10s, 20s ... up to 60s).
     EMBEDDING_RATE_LIMIT_RETRIES: int = 6
 

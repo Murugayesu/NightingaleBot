@@ -93,7 +93,7 @@ class LiteLLMClient:
         rerank_api_key: str | None = None,
         rerank_base_url: str | None = None,
         max_tokens: int | None = None,
-        timeout: float = 60.0,
+        timeout: float = 300.0,
         max_retries: int = 2,
         rate_limit_retries: int = 6,
         rate_limit_base_delay: float = 5.0,
