@@ -226,8 +226,22 @@ def create_app() -> FastAPI:
         return {"service": f"{settings.KNOWLEDGE_BASE_NAME} API", "health": "/health"}
 
     @app.get("/health", tags=["System"])
+    @app.get("/api/health", include_in_schema=False)
     async def health() -> dict[str, Any]:
         return {"status": "ok", "version": __version__}
+
+    @app.get("/api/openapi.json", include_in_schema=False)
+    async def api_openapi() -> dict[str, Any]:
+        return app.openapi()
+
+    @app.get("/api/metrics", include_in_schema=False)
+    async def api_metrics() -> dict[str, Any]:
+        return {"active_documents": 0, "active_chunks": 0}
+
+    @app.get("/api", include_in_schema=False)
+    @app.get("/api/", include_in_schema=False)
+    async def api_root_info() -> dict[str, str]:
+        return {"service": f"{settings.KNOWLEDGE_BASE_NAME} API", "health": "/health"}
 
     setup_tracing("nursing-bot-api", settings)
     instrument_fastapi(app)

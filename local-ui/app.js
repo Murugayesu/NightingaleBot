@@ -2,8 +2,24 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 const pretty = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-const state = { view:'chat', logs:[], docPage:1, docTotal:0, selectedDoc:null, chunkOffset:0, chunkCount:0, chatAbort:null, uploadWatch:null, endpoints:[], healthBusy:false };
+const state = { view:'chat', logs:[], docPage:1, docTotal:0, selectedDoc:null, chunkOffset:0, chunkCount:0, chatAbort:null, uploadWatch:null, endpoints:[], healthBusy:false, sessionToken:localStorage.getItem('nursingbot-local-token')||null };
 let toastTimer;
+
+async function ensureSession() {
+  if (state.sessionToken) return state.sessionToken;
+  try {
+    const res = await fetch('/api/chat/session', {method:'POST', headers:{'Content-Type':'application/json'}}).then(r=>r.json());
+    if (res.session_token) {
+      state.sessionToken = res.session_token;
+      updateSession(res.session_id);
+      localStorage.setItem('nursingbot-local-token', res.session_token);
+      return res.session_token;
+    }
+  } catch(e) {
+    console.warn('Could not auto-create session token:', e);
+  }
+  return null;
+}
 
 function toast(message, error = false) {
   clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').className = `toast${error ? ' error' : ''}`;
@@ -17,7 +33,8 @@ function logRequest(record) {
 async function api(path, {method='GET', body, signal, raw=false} = {}) {
   const start = performance.now(); const form = body instanceof FormData;
   const requestBody = form ? { file:body.get('file')?.name, doc_type:body.get('doc_type'), metadata_json:body.get('metadata_json') } : body;
-  const options = {method, signal, headers:{}};
+  const options = {method, signal, headers:{'X-Admin-API-Key':'admin:admin@123'}};
+  if (state.sessionToken) options.headers['X-Session-Token'] = state.sessionToken;
   if (body !== undefined) { options.body = form ? body : JSON.stringify(body); if (!form) options.headers['Content-Type'] = 'application/json'; }
   let response, text, data;
   try {
@@ -73,7 +90,7 @@ async function checkHealth() {
     const health = await api('/health');
     $('#health-badge').className = `badge ${health.status === 'ok' ? 'success' : 'warning'}`;
     $('#health-badge').textContent = health.status === 'ok' ? '● Docker backend online' : '● Backend degraded';
-    const problems = Object.entries(health).filter(([key,value]) => key !== 'status' && value !== 'ok');
+    const problems = Object.entries(health).filter(([key,value]) => !['status', 'version'].includes(key) && value !== 'ok');
     $('#global-banner').classList.toggle('hidden', !problems.length);
     if (problems.length) { $('#global-banner').className='banner'; $('#global-banner').textContent='Backend needs attention: '+problems.map(([key,value]) => `${key}: ${value}`).join(' · '); }
     return health;
@@ -108,7 +125,10 @@ function decorateMessage(element, meta) {
 async function streamChat(payload, assistant) {
   const start=performance.now(); const events=[]; let response;
   try {
-    response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:state.chatAbort.signal});
+    const token = await ensureSession();
+    const headers = {'Content-Type':'application/json','X-Admin-API-Key':'admin:admin@123'};
+    if (token) headers['X-Session-Token'] = token;
+    response=await fetch('/api/chat',{method:'POST',headers,body:JSON.stringify(payload),signal:state.chatAbort.signal});
     if (!response.ok) { const text=await response.text(); let data; try {data=JSON.parse(text);} catch {data=text;} logRequest({method:'POST',path:'/chat (SSE)',status:response.status,duration:performance.now()-start,request:payload,response:data}); throw new Error(pretty(data.detail || data)); }
     const reader=response.body.getReader(); const decoder=new TextDecoder(); let buffer='',answer='',meta={citations:[]},ended=false;
     function handleBlock(block) {
@@ -140,6 +160,7 @@ $('#chat-form').addEventListener('submit', async event => {
   event.preventDefault(); if (state.chatAbort) return;
   const query=$('#chat-input').value.trim(); if (!query) return;
   let filters; try { filters=objectValue('#chat-filters'); } catch(error) {toast(error.message,true); return;}
+  await ensureSession();
   const sessionId=$('#session-id').value.trim() || crypto.randomUUID(); updateSession(sessionId);
   addMessage('user',query); const assistant=addMessage('assistant','Searching sources and validating the answer'); $('.message-text',assistant).classList.add('thinking');
   const payload={query,session_id:sessionId,filters,stream:$('#stream-mode').checked};
@@ -154,7 +175,17 @@ $('#chat-form').addEventListener('submit', async event => {
 });
 $('#chat-input').addEventListener('keydown',event => { if (event.key==='Enter' && !event.shiftKey) {event.preventDefault(); $('#chat-form').requestSubmit();} });
 $('#cancel-chat').addEventListener('click',()=>state.chatAbort?.abort());
-$('#new-chat').addEventListener('click',()=>{ if(state.chatAbort) {toast('Stop the current request first.');return;} updateSession(''); $('#chat-messages').innerHTML=''; $('#chat-status').textContent='New conversation ready.'; $('#chat-input').focus(); });
+$('#new-chat').addEventListener('click', async () => {
+  if (state.chatAbort) { toast('Stop the current request first.'); return; }
+  localStorage.removeItem('nursingbot-local-token');
+  localStorage.removeItem('nursingbot-local-session');
+  state.sessionToken = null;
+  updateSession('');
+  $('#chat-messages').innerHTML = '';
+  $('#chat-status').textContent = 'New conversation ready.';
+  await ensureSession();
+  $('#chat-input').focus();
+});
 $('#copy-session').addEventListener('click',()=>run(async()=>{if(!$('#session-id').value) throw new Error('There is no session ID yet.');await navigator.clipboard.writeText($('#session-id').value);toast('Session ID copied.');}));
 $('#load-conversation').addEventListener('click',event=>run(async()=>{
   if(state.chatAbort) throw new Error('Stop the current request first.');
@@ -172,12 +203,20 @@ $('#delete-conversation').addEventListener('click',event=>run(async()=>{
 $$('[data-prompt]').forEach(button=>button.addEventListener('click',()=>{$('#chat-input').value=button.dataset.prompt;$('#chat-input').focus();}));
 
 async function loadDocuments() {
-  const params=new URLSearchParams({page:state.docPage,page_size:$('#doc-page-size').value});
-  for(const [name,selector] of [['status','#doc-status'],['doc_type','#doc-type-filter'],['content_type','#doc-content']]) if($(selector).value.trim()) params.set(name,$(selector).value.trim());
-  const result=await api('/documents?'+params);state.docTotal=result.total;
-  $('#document-count').textContent=`${result.total} document${result.total===1?'':'s'}`;
-  $('#documents-table').innerHTML=result.items.length?result.items.map(doc=>`<tr><td><strong>${escape(doc.filename)}</strong><small>${escape(doc.doc_type)} · ${escape(doc.content_type)}</small>${doc.failure_reason?`<small style="color:var(--danger)">${escape(doc.failure_reason.slice(0,140))}</small>`:''}</td><td>${statusBadge(doc.status)}</td><td>${doc.total_chunks}</td><td>${escape(new Date(doc.created_at).toLocaleDateString())}</td><td><button class="row-button" data-document="${doc.id}">Inspect ↗</button></td></tr>`).join(''):'<tr><td colspan="5" class="empty">No sources match these filters. Upload a document to begin.</td></tr>';
-  const pages=Math.max(1,Math.ceil(result.total/result.page_size));$('#doc-page-label').textContent=`Page ${state.docPage} of ${pages}`;$('#prev-doc-page').disabled=state.docPage<=1;$('#next-doc-page').disabled=state.docPage>=pages;
+  const pageSize = Number($('#doc-page-size').value) || 20;
+  const params = new URLSearchParams({ page: state.docPage, page_size: pageSize });
+  for (const [name, selector] of [['status', '#doc-status'], ['doc_type', '#doc-type-filter'], ['content_type', '#doc-content']]) {
+    if ($(selector).value.trim()) params.set(name, $(selector).value.trim());
+  }
+  const result = await api('/documents?' + params);
+  state.docTotal = result.total;
+  const docs = result.documents || result.items || [];
+  $('#document-count').textContent = `${result.total} document${result.total === 1 ? '' : 's'}`;
+  $('#documents-table').innerHTML = docs.length ? docs.map(doc => `<tr><td><strong>${escape(doc.filename)}</strong><small>${escape(doc.doc_type)} · ${escape(doc.content_type)}</small>${doc.failure_reason ? `<small style="color:var(--danger)">${escape(doc.failure_reason.slice(0, 140))}</small>` : ''}</td><td>${statusBadge(doc.status)}</td><td>${doc.total_chunks}</td><td>${escape(new Date(doc.created_at).toLocaleDateString())}</td><td><button class="row-button" data-document="${doc.id}">Inspect ↗</button></td></tr>`).join('') : '<tr><td colspan="5" class="empty">No sources match these filters. Upload a document to begin.</td></tr>';
+  const pages = Math.max(1, Math.ceil(result.total / pageSize));
+  $('#doc-page-label').textContent = `Page ${state.docPage} of ${pages}`;
+  $('#prev-doc-page').disabled = state.docPage <= 1;
+  $('#next-doc-page').disabled = state.docPage >= pages;
 }
 $('#refresh-documents').addEventListener('click',event=>run(loadDocuments,event.currentTarget));
 $('#apply-doc-filters').addEventListener('click',event=>{state.docPage=1;run(loadDocuments,event.currentTarget);});
@@ -280,7 +319,11 @@ $('#log-list').addEventListener('click',event=>{const button=event.target.closes
 
 async function initialize() {
   $('#session-id').value=localStorage.getItem('nursingbot-local-session')||'';
+  const host=window.location.hostname||'127.0.0.1';
+  $$('a[href*="localhost:8000/docs"]').forEach(a=>a.href='/docs');
+  $$('a[href*="localhost:9001"]').forEach(a=>a.href=`http://${host}:9001`);
+  $$('a[href*="localhost:6006"]').forEach(a=>a.href=`http://${host}:6006`);
   try {const info=await fetch('/local/info').then(response=>response.json());$('#model-info').innerHTML=`<small>CHAT</small><strong>${escape(info.chatModel||'Configured in .env')}</strong><small>EMBEDDINGS</small><strong>${escape(info.embeddingModel||'Configured in .env')}</strong><small>Real backend · ${escape(info.mode||'Docker')}</small>`;$('#reindex-model').value=info.embeddingModel||'';}catch{$('#model-info').textContent='Model settings are supplied by your Docker backend.';}
-  showView(location.hash.slice(1)||'chat',false);await checkHealth();run(loadSchema);
+  showView(location.hash.slice(1)||'chat',false);await ensureSession();await checkHealth();run(loadSchema);
 }
 initialize();setInterval(checkHealth,30000);setInterval(watchUpload,3000);

@@ -192,8 +192,14 @@ async def list_documents(
     status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    page: int | None = Query(None, ge=1),
+    page_size: int | None = Query(None, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentListResponse:
+    if page_size is not None:
+        limit = page_size
+    if page is not None:
+        offset = (page - 1) * limit
     stmt = select(Document)
     if doc_type:
         stmt = stmt.where(Document.doc_type == doc_type)
